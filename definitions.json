@@ -1,0 +1,22 @@
+{
+  "users": [
+    {"name": "guest", "password_hash": "", "hashing_algorithm": "", "tags": "administrator"}
+  ],
+  "vhosts": [
+    {"name": "/"}
+  ],
+  "permissions": [
+    {"user": "guest", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*"}
+  ],
+  "parameters": [],
+  "policies": [],
+  "queues": [
+    {"name": "inbound-queue", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {}},
+    {"name": "low-priority-queue", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {}},
+    {"name": "FOO", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {}},
+    {"name": "EXTERNAL", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {}}
+  ],
+  "exchanges": [],
+  "bindings": []
+}
+

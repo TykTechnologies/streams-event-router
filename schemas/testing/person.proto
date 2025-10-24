@@ -1,0 +1,16 @@
+syntax = "proto3";
+package testing;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/example/event-router-demo/internal/pb/testing";
+
+message Person {
+  string first_name = 1;
+  string last_name = 2;
+  string full_name = 3;
+  int32 age = 4;
+  int32 id = 5;
+  string email = 6;
+  google.protobuf.Timestamp last_updated = 7;
+}

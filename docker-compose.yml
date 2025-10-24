@@ -1,0 +1,105 @@
+services:
+  labs-zookeeper:
+    image: docker.io/bitnami/zookeeper:3.8
+    restart: always
+    ports:
+      - "2181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+
+  labs-kafka:
+    image: docker.io/bitnami/kafka:3.3
+    restart: always
+    depends_on:
+      - labs-zookeeper
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=labs-zookeeper:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CLIENT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_LISTENERS=CLIENT://:9092,EXTERNAL://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=CLIENT://labs-kafka:9092,EXTERNAL://localhost:9093
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=CLIENT
+
+  kafka-init:
+    image: docker.io/bitnami/kafka:3.3
+    depends_on:
+      - labs-kafka
+    entrypoint: ["bash","-lc"]
+    command: |
+      'for i in {1..60}; do /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server labs-kafka:9092 --list >/dev/null 2>&1 && break || sleep 1; done; \
+       /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server labs-kafka:9092 --create --if-not-exists --topic high-priority-topic --partitions 3 --replication-factor 1; \
+       /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server labs-kafka:9092 --create --if-not-exists --topic FOO --partitions 1 --replication-factor 1; \
+       echo "Kafka topics ready."; sleep 2'
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    restart: always
+    ports:
+      - "127.0.0.1::5672"
+      - "127.0.0.1::15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_LOAD_DEFINITIONS: "true"
+      RABBITMQ_DEFINITIONS_FILE: "/etc/rabbitmq/definitions.json"
+    volumes:
+      - ./definitions.json:/etc/rabbitmq/definitions.json:ro
+    command: ["bash","-lc","rabbitmq-plugins enable --offline rabbitmq_amqp1_0 && exec docker-entrypoint.sh rabbitmq-server"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  streams:
+    build:
+      context: ./streams
+    depends_on:
+      - rabbitmq
+      - labs-kafka
+      - kafka-init
+    ports:
+      - "4195:4195"
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_QUEUE: inbound-queue
+      RABBITMQ_EXCHANGE: ""
+      RABBITMQ_ROUTING_KEY: low-priority-queue
+      KAFKA_BOOTSTRAP_SERVERS: labs-kafka:9092
+      KAFKA_TOPIC_HIGH: high-priority-topic
+      AMQP_MODE: local
+      PROTOBUF_IMPORTS: /work/schemas
+      PERSON_PROTO_IMPORTS: /work/schemas
+      DEFAULT_HTTP_URL: http://demo:8080/events
+    volumes:
+      - ./:/work
+    working_dir: /work
+
+  demo:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
+    depends_on:
+      - labs-kafka
+      - rabbitmq
+      - streams
+    environment:
+      KAFKA_BROKER: labs-kafka:9092
+      KAFKA_TOPIC: high-priority-topic
+      KAFKA_GROUP: demo-group
+      AMQP_ADDR: amqp://rabbitmq:5672
+      AMQP_SOURCE: low-priority-queue
+      AMQP_TARGET: inbound-queue
+      BENTO_URL: http://host.docker.internal:4195/inbound
+    ports:
+      - "8080:8080"
+
+
+volumes:
+  kafka-data:
+  zookeeper-data:
+  rabbitmq_data:

@@ -1,0 +1,125 @@
+# Event Gateway POC (Bento)
+# Inputs: RabbitMQ (AMQP 0.9.1) + HTTP
+# Pipeline: Validate to CloudEvents shape -> normalize -> per-event transform via processors.switch
+# Outputs: Route via output.switch to Kafka/Event Hubs, RabbitMQ/Service Bus, or HTTP (Event Grid/local)
+input:
+  broker:
+    inputs:
+      - amqp_0_9:
+          label: inbound_rabbit
+          urls:
+            - "${RABBITMQ_URL:amqp://guest:guest@localhost:5672/}"
+          queue: "${RABBITMQ_QUEUE:inbound-queue}"
+          prefetch_count: 64
+      - http_server:
+          label: inbound_http
+          path: /inbound
+          allowed_verbs: [ POST ]
+          timeout: 5s
+
+pipeline:
+  threads: -1
+  processors:
+    - json_schema:
+        # Minimal CloudEvents-like validation
+        schema: |
+          {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "required": ["id", "source", "type", "data"],
+            "properties": {
+              "id": {"type": "string"},
+              "source": {"type": "string"},
+              "type": {"type": "string"},
+              "data": {"type": "object"}
+            }
+          }
+    - mapping: |
+        # Normalize to the Event proto shape
+        root = {
+          "id": this.id.string(),
+          "source": this.source.string(),
+          "type": this.type.uppercase(),
+          "data": this.data,
+          "timestamp": now().ts_format("2006-01-02T15:04:05Z07:00")
+        }
+    - switch:
+        # Choose transform per event and set routing hints in metadata
+        - check: this.type == "HIGH_PRIORITY"
+          processors:
+            - mapping: 'meta route = "kafka"; meta encoding = "protobuf"'
+            - protobuf:
+                operator: from_json
+                message: ${PROTOBUF_MESSAGE:event.Event}
+                import_paths: [ "${PROTOBUF_IMPORTS:./schemas}" ]
+            - log:
+                level: INFO
+                message: "Transformed to protobuf for Kafka route"
+        - check: this.type == "LOW_PRIORITY"
+          processors:
+            - mapping: |
+                meta encoding = "protobuf"
+                meta route = if env("AMQP_MODE").or("local") == "azure" { "amqp_azure" } else { "amqp_local" }
+            - protobuf:
+                operator: from_json
+                message: ${PROTOBUF_MESSAGE:event.Event}
+                import_paths: [ "${PROTOBUF_IMPORTS:./schemas}" ]
+            - sleep:
+                duration: 5s
+        - processors:
+            # Default path: keep JSON and send via HTTP (Event Grid or local collector)
+            - mapping: |
+                meta encoding = "json"
+                meta route = if env("DEFAULT_ROUTE").or("http") == "kafka" { "kafka" } else { "http" }
+            - log:
+                level: DEBUG
+                message: "Default route selected"
+                fields_mapping: 'root = {"route": meta("route"), "type": this.type}'
+
+output:
+  switch:
+    retry_until_success: true
+    strict_mode: false  # drop if no case matches (flip to true to nack on no match)
+    cases:
+      - check: meta("route") == "kafka"
+        output:
+          kafka:
+            addresses: [ "${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}" ]
+            topic: "${KAFKA_TOPIC_HIGH:high-priority-topic}"
+            max_in_flight: 64
+            # For Azure Event Hubs over Kafka: enable SASL PLAIN + TLS
+            sasl:
+              mechanism: ${KAFKA_SASL_MECHANISM:none}
+              user: "${KAFKA_SASL_USER:}"
+              password: "${KAFKA_SASL_PASSWORD:}"
+            tls:
+              enabled: ${KAFKA_TLS_ENABLED:false}
+      - check: meta("route") == "amqp_local"
+        output:
+          amqp_0_9:
+            # RabbitMQ AMQP 0.9.1 output (exchange/key); default exchange routes to queue by key
+            url: "${RABBITMQ_URL:amqp://guest:guest@localhost:5672/}"
+            exchange: "${RABBITMQ_EXCHANGE:}"
+            key: "${RABBITMQ_ROUTING_KEY:low-priority-queue}"
+            max_in_flight: 64
+      - check: meta("route") == "amqp_azure"
+        output:
+          amqp_1:
+            urls: [ "${AZURE_SB_URL:amqps://your-service-bus-namespace.servicebus.windows.net}" ]
+            target_address: "${AZURE_SB_TARGET:queue:/low-priority-queue}"
+            sasl:
+              mechanism: plain
+              user: "${AZURE_SB_USER:}"
+              password: "${AZURE_SB_PASSWORD:}"
+            tls:
+              enabled: true
+            max_in_flight: 64
+      - output:
+          http_client:
+            # Event Grid or local collector
+            url: "${DEFAULT_HTTP_URL:http://localhost:8081/events}"
+            verb: POST
+            headers:
+              Content-Type: application/cloudevents+json; charset=utf-8
+              aeg-sas-key: "${AZURE_EG_KEY:}"
+            max_in_flight: 64

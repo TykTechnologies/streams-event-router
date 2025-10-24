@@ -1,0 +1,15 @@
+syntax = "proto3";
+package event;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/example/event-router-demo/internal/pb/event";
+
+message Event {
+  string id = 1;
+  string source = 2;
+  string type = 3;
+  google.protobuf.Struct data = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}

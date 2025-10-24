@@ -1,0 +1,125 @@
+input:
+  broker:
+    inputs:
+      - amqp_0_9:
+          urls:
+            - "${RABBITMQ_URL:amqp://guest:guest@localhost:5672/}"
+          queue: "${RABBITMQ_QUEUE:inbound-queue}"
+          queue_declare:
+            enabled: false
+          prefetch_count: 64
+      - http_server:
+          path: /inbound
+          allowed_verbs: [ POST ]
+          timeout: 20s
+
+pipeline:
+  threads: -1
+  processors:
+    - switch:
+        # Only validate/normalize when the payload explicitly looks like CloudEvents
+        - check: 'this.specversion.string().catch("") != ""'
+          processors:
+            - json_schema:
+                schema: |
+                  {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "required": ["id", "source", "type"],
+                    "properties": {
+                      "id": {"type": "string"},
+                      "source": {"type": "string"},
+                      "type": {"type": "string"},
+                      "data": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                    }
+                  }
+            - mapping: |
+                root.id = this.id.string()
+                root.source = this.source.string()
+                root.type = this.type.string().uppercase()
+                root.data = this.data
+                root.timestamp = now().ts_format("2006-01-02T15:04:05Z07:00")
+                meta is_ce = "true"
+        - processors:
+            - mapping: 'meta is_ce = "false"'
+
+    - switch:
+        # Decide destinations via flags (supports multi-output) using clearer business-style types
+        - check: 'this.type.string().catch("").uppercase() == "BROADCAST_DEMO"'
+          processors:
+            - mapping: |
+                meta route_kafka = "true"
+                meta route_amqp = if env("AMQP_MODE").catch("local") == "azure" { "amqp_azure" } else { "amqp_local" }
+                meta route_http = "true"
+        - check: 'this.type.string().catch("").uppercase() == "ORDER_CREATED"'
+          processors:
+            - mapping: 'meta route_kafka = "true"'
+        - check: 'this.type.string().catch("").uppercase() == "USER_REGISTERED"'
+          processors:
+            - mapping: 'meta route_amqp = if env("AMQP_MODE").catch("local") == "azure" { "amqp_azure" } else { "amqp_local" }'
+        - check: 'this.type.string().catch("").uppercase() == "AUDIT_LOG"'
+          processors:
+            - mapping: 'meta route_http = "true"'
+        - processors:
+            # Default when no explicit route set
+            - mapping: 'meta route_http = meta("route_http").or("true")'
+
+output:
+  switch:
+    retry_until_success: true
+    strict_mode: false
+    cases:
+      - check: 'meta("route_kafka") == "true"'
+        continue: true
+        output:
+          kafka:
+            addresses: [ "${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}" ]
+            topic: "${KAFKA_TOPIC_HIGH:high-priority-topic}"
+            max_in_flight: 64
+            sasl:
+              mechanism: ${KAFKA_SASL_MECHANISM:none}
+              user: "${KAFKA_SASL_USER:}"
+              password: "${KAFKA_SASL_PASSWORD:}"
+            tls:
+              enabled: ${KAFKA_TLS_ENABLED:false}
+          processors:
+            - mapping: |
+                root.id = this.id.string().catch(uuid_v4())
+                root.source = this.source.string().catch("unknown")
+                root.type = this.type.string().catch("UNKNOWN").uppercase()
+                root.data = this.data.or(this)
+                root.timestamp = now().ts_format("2006-01-02T15:04:05Z07:00")
+            - protobuf:
+                operator: from_json
+                message: ${PROTOBUF_MESSAGE:event.Event}
+                import_paths: [ "${PROTOBUF_IMPORTS:./schemas}" ]
+
+      - check: 'meta("route_amqp") == "amqp_local"'
+        continue: true
+        output:
+          amqp_0_9:
+            urls:
+              - "${RABBITMQ_URL:amqp://guest:guest@localhost:5672/}"
+            exchange: "${RABBITMQ_EXCHANGE:}"
+            key: "${RABBITMQ_ROUTING_KEY:low-priority-queue}"
+            max_in_flight: 64
+
+      - check: 'meta("route_http").or("false") == "true"'
+        continue: false
+        output:
+          http_client:
+            url: "${DEFAULT_HTTP_URL:http://localhost:8081/events}"
+            verb: POST
+            headers:
+              Content-Type: application/json
+              aeg-sas-key: "${AZURE_EG_KEY:}"
+            max_in_flight: 64
+          processors:
+            - mapping: |
+                root = this
+                root.type = this.type.or("unknown")
+                root.route_hint = {
+                  "kafka": meta("route_kafka").or("false"),
+                  "amqp": meta("route_amqp").or("") ,
+                  "http": meta("route_http").or("false")
+                }
