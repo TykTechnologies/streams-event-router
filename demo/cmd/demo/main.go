@@ -53,6 +53,9 @@ func main() {
     amqpSourceAddress := env("AMQP_SOURCE", "low-priority-queue")
     amqpTargetAddress := env("AMQP_TARGET", "inbound-queue")
     bentoURL := env("BENTO_URL", "http://streams:4195/inbound")
+    // Full Gateway path = API listenPath + http_server path from x-tyk-streaming
+    // listenPath: /streams-api/, http_server.path: /streams/inbound
+    tykURL := env("TYK_STREAMS_URL", "http://tyk-gateway:8282/ingest-proxy/")
 
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
@@ -69,16 +72,16 @@ func main() {
     http.HandleFunc("/sse", serveSSE)
     // Emit endpoints -> send events to Bento HTTP input
     http.HandleFunc("/emit/order-created", func(w http.ResponseWriter, r *http.Request) {
-        sendCE(w, bentoURL, "ORDER_CREATED", map[string]any{"orderId": time.Now().UnixNano()})
+        sendCE(w, tykURL, "ORDER_CREATED", map[string]any{"orderId": time.Now().UnixNano()})
     })
     http.HandleFunc("/emit/user-registered", func(w http.ResponseWriter, r *http.Request) {
-        sendCE(w, bentoURL, "USER_REGISTERED", map[string]any{"userId": time.Now().UnixNano()})
+        sendCE(w, tykURL, "USER_REGISTERED", map[string]any{"userId": time.Now().UnixNano()})
     })
     http.HandleFunc("/emit/audit", func(w http.ResponseWriter, r *http.Request) {
-        sendCE(w, bentoURL, "AUDIT_LOG", map[string]any{"action": "demo-click", "ts": time.Now().Format(time.RFC3339)})
+        sendCE(w, tykURL, "AUDIT_LOG", map[string]any{"action": "demo-click", "ts": time.Now().Format(time.RFC3339)})
     })
     http.HandleFunc("/emit/broadcast", func(w http.ResponseWriter, r *http.Request) {
-        sendCE(w, bentoURL, "BROADCAST_DEMO", map[string]any{"note": "fanout"})
+        sendCE(w, tykURL, "BROADCAST_DEMO", map[string]any{"note": "fanout"})
     })
     // Manual AMQP inbound (send one message directly to inbound-queue)
     http.HandleFunc("/emit/inbound-amqp", func(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +94,7 @@ func main() {
     })
     http.HandleFunc("/emit/person", func(w http.ResponseWriter, r *http.Request) {
         body := map[string]any{"firstName": "caleb", "lastName": "quaye", "email": "caleb@myspace.com"}
-        postJSON(w, bentoURL, body)
+        postJSON(w, tykURL, body)
     })
     http.HandleFunc("/emit/raw", func(w http.ResponseWriter, r *http.Request) {
         var m map[string]any
@@ -324,6 +327,16 @@ func postJSON(w http.ResponseWriter, url string, body any) {
     b, _ := json.Marshal(body)
     candidates := []string{
         url,
+        // Prefer dedicated gateway proxy path (ingest-proxy)
+        "http://tyk-gateway:8282/ingest-proxy/",
+        "http://localhost:8282/ingest-proxy/",
+        // Tyk Streams via API base + http_server path
+        "http://tyk-gateway:8282/streams-api/inbound",
+        "http://localhost:8282/streams-api/inbound",
+        // Legacy guesses
+        "http://tyk-gateway:8282/streams/inbound",
+        "http://localhost:8282/streams/inbound",
+        // Bento direct
         "http://streams:4195/inbound",
         "http://host.docker.internal:4195/inbound",
         "http://localhost:4195/inbound",
@@ -339,9 +352,14 @@ func postJSON(w http.ResponseWriter, url string, body any) {
             lastErr = err
             continue
         }
-        defer resp.Body.Close()
-        w.WriteHeader(resp.StatusCode)
-        return
+        // read & close to reuse connections
+        _ = resp.Body.Close()
+        // Treat only <400 as success; otherwise try next candidate
+        if resp.StatusCode < 400 {
+            w.WriteHeader(resp.StatusCode)
+            return
+        }
+        lastErr = fmt.Errorf("upstream %s returned %d", u, resp.StatusCode)
     }
     w.WriteHeader(http.StatusBadGateway)
     if lastErr != nil { _, _ = w.Write([]byte(lastErr.Error())) }
@@ -400,7 +418,7 @@ var indexHTML = `<!DOCTYPE html>
         <div id="inputs" class="p-4 mb-4 border-2 border-gray-300 rounded-md">
       <h2 class="text-xl font-semibold mb-2">Inputs</h2>
       <div id="httpInputBlock" class="p-4 mb-2 rounded-md border-2 border-gray-300">
-        <h3 class="text-lg font-medium">HTTP Input (POST /inbound)</h3>
+        <h3 class="text-lg font-medium">HTTP Input (POST /streams/inbound)</h3>
         <div id="httpInputStatus" class="text-sm mt-1">Checking status...</div>
       </div>
       <div id="amqpInBlock" class="p-4 mb-2 rounded-md border-2 border-gray-300">

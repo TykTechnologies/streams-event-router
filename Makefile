@@ -1,7 +1,8 @@
 SHELL := /usr/bin/env bash
 
 BENTO ?= $(shell command -v bento 2>/dev/null)
-CONFIG := bento.yaml
+# Default to local config; override with `make CONFIG=...`
+CONFIG ?= configs/bento/bento.local.yaml
 ENVFILE := .env.benthos
 
 .PHONY: discover lint run run-docker

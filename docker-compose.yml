@@ -65,6 +65,7 @@ services:
     ports:
       - "4195:4195"
     environment:
+      BENTO_CONFIG: /work/configs/bento/bento.local.yaml
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       RABBITMQ_QUEUE: inbound-queue
       RABBITMQ_EXCHANGE: ""
@@ -97,6 +98,55 @@ services:
       BENTO_URL: http://host.docker.internal:4195/inbound
     ports:
       - "8080:8080"
+
+  tyk-gateway:
+    image: tykio/tyk-gateway-ee:v5.10.0
+    depends_on:
+      - redis
+      - labs-kafka
+      - rabbitmq
+    environment:
+      TYK_GW_LISTENPORT: 8282
+      TYK_GW_USE_DB: "false"
+      TYK_GW_STORAGE_TYPE: redis
+      TYK_GW_STORAGE_HOST: redis
+      TYK_GW_STORAGE_PORT: "6379"
+      TYK_GW_STORAGE_PASSWORD: ""
+      TYK_GW_CONTROL_API_PORT: 9696
+      TYK_GW_SECRET: foo
+      TYK_GW_APP_PATH: /opt/tyk-gateway/apps
+      TYK_GW_APPS_PATH: /opt/tyk-gateway/apps
+      TYK_GW_POLICIES_POLICY_SOURCE: file
+      TYK_GW_POLICIES_POLICY_DIR: /opt/tyk-gateway/policies
+      TYK_GW_ENABLEOAS: "true"
+      TYK_GW_ENABLE_API: "true"
+      TYK_GW_STREAMING_ENABLED: "true"
+      TYK_GW_STREAMING_ALLOWUNSAFE: http_server
+      TYK_LOGLEVEL: debug
+    volumes:
+      - ./tyk/apps:/opt/tyk-gateway/apps:ro
+      - ./tyk/policies:/opt/tyk-gateway/policies:ro
+      - ./schemas:/work/schemas:ro
+    ports:
+      - "8282:8282"
+      - "9696:9696"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  tyk-import:
+    image: curlimages/curl:8.7.1
+    depends_on:
+      - tyk-gateway
+    environment:
+      TYK_SECRET: foo
+      GW: http://tyk-gateway:8282
+    volumes:
+      - ./tyk/oas:/oas:ro
+      - ./tyk/import_oas.sh:/import_oas.sh:ro
+    entrypoint: ["sh","/import_oas.sh","/oas/bento-router.oas.json"]
+    restart: "no"
 
 
 volumes:
