@@ -18,15 +18,14 @@ if [ ! -x "$YQ" ]; then
   chmod +x "$YQ"
 fi
 
-# Delete any prior APIs with the same name to avoid listenPath collisions
+# Delete any prior APIs by name or listen path to avoid collisions
 API_NAME="Bento Router (Streams)"
-echo "Cleaning prior APIs named: $API_NAME ..."
-EXISTING_IDS=$(
-  curl -fsS -H "x-tyk-authorization: $SECRET" "$GW/tyk/apis" \
-  | "$YQ" -p=json -o=json '.[] | select(.name == strenv(API_NAME)) | .api_id' 2>/dev/null || true
-)
-for id in $EXISTING_IDS; do
-  echo "Deleting existing API id=$id"
+echo "Cleaning prior APIs named: $API_NAME or with listen_path /streams-api/ ..."
+ALL=$(curl -fsS -H "x-tyk-authorization: $SECRET" "$GW/tyk/apis" || echo '[]')
+IDS_BY_NAME=$(echo "$ALL" | "$YQ" -p=json -o=json '.[] | select(.name == strenv(API_NAME)) | .api_id' 2>/dev/null || true)
+IDS_BY_PATH=$(echo "$ALL" | "$YQ" -p=json -o=json '.[] | select(.api_definition.proxy.listen_path | startswith("/streams-api/")) | .api_id' 2>/dev/null || true)
+for id in $IDS_BY_NAME $IDS_BY_PATH; do
+  echo "Deleting API id=$id"
   curl -fsS -H "x-tyk-authorization: $SECRET" -X DELETE "$GW/tyk/apis/oas/$id" >/dev/null || true
 done
 
