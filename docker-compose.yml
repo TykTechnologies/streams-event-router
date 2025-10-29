@@ -127,7 +127,7 @@ services:
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
   tyk-import:
-    image: curlimages/curl:8.7.1
+    image: python:3.12-alpine
     depends_on:
       - tyk-gateway
     environment:
