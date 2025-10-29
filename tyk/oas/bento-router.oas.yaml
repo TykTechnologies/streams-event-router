@@ -75,13 +75,13 @@ x-tyk-streaming:
                     - "labs-kafka:9092"
                   max_in_flight: 64
                   topic: "high-priority-topic"
-              processors:
-                - mapping: "root.id = this.id.string().catch(uuid_v4())\nroot.source = this.source.string().catch(\"unknown\")\nroot.type = this.type.string().catch(\"UNKNOWN\").uppercase()\nroot.data = this.data.or(this)\nroot.timestamp = now().ts_format(\"2006-01-02T15:04:05Z07:00\")"
-                - protobuf:
-                    import_paths:
-                      - /work/schemas
-                    message: event.Event
-                    operator: from_json
+                processors:
+                  - mapping: "root.id = this.id.string().catch(uuid_v4())\nroot.source = this.source.string().catch(\"unknown\")\nroot.type = this.type.string().catch(\"UNKNOWN\").uppercase()\nroot.data = this.data.or(this)\nroot.timestamp = now().ts_format(\"2006-01-02T15:04:05Z07:00\")"
+                  - protobuf:
+                      import_paths:
+                        - /work/schemas
+                      message: event.Event
+                      operator: from_json
             - check: meta("route_amqp") == "amqp_local"
               continue: true
               output:
@@ -100,8 +100,8 @@ x-tyk-streaming:
                   max_in_flight: 64
                   url: "http://demo:8080/events"
                   verb: POST
-              processors:
-                - mapping: "root = this\nroot.type = this.type.or(\"unknown\")\nroot.route_hint = {\"kafka\": meta(\"route_kafka\").or(\"false\"), \"amqp\": meta(\"route_amqp\").or(\"\"), \"http\": meta(\"route_http\").or(\"false\") }"
+                processors:
+                  - mapping: "root = this\nroot.type = this.type.or(\"unknown\")\nroot.route_hint = {\"kafka\": meta(\"route_kafka\").or(\"false\"), \"amqp\": meta(\"route_amqp\").or(\"\"), \"http\": meta(\"route_http\").or(\"false\") }"
     http_ingest:
       input:
         http_server:
@@ -148,13 +148,13 @@ x-tyk-streaming:
                     - "labs-kafka:9092"
                   max_in_flight: 64
                   topic: "high-priority-topic"
-              processors:
-                - mapping: "root.id = this.id.string().catch(uuid_v4())\nroot.source = this.source.string().catch(\"unknown\")\nroot.type = this.type.string().catch(\"UNKNOWN\").uppercase()\nroot.data = this.data.or(this)\nroot.timestamp = now().ts_format(\"2006-01-02T15:04:05Z07:00\")"
-                - protobuf:
-                    import_paths:
-                      - /work/schemas
-                    message: event.Event
-                    operator: from_json
+                processors:
+                  - mapping: "root.id = this.id.string().catch(uuid_v4())\nroot.source = this.source.string().catch(\"unknown\")\nroot.type = this.type.string().catch(\"UNKNOWN\").uppercase()\nroot.data = this.data.or(this)\nroot.timestamp = now().ts_format(\"2006-01-02T15:04:05Z07:00\")"
+                  - protobuf:
+                      import_paths:
+                        - /work/schemas
+                      message: event.Event
+                      operator: from_json
             - check: meta("route_amqp") == "amqp_local"
               continue: true
               output:
@@ -173,5 +173,5 @@ x-tyk-streaming:
                   max_in_flight: 64
                   url: "http://demo:8080/events"
                   verb: POST
-              processors:
-                - mapping: "root = this\nroot.type = this.type.or(\"unknown\")\nroot.route_hint = {\"kafka\": meta(\"route_kafka\").or(\"false\"), \"amqp\": meta(\"route_amqp\").or(\"\"), \"http\": meta(\"route_http\").or(\"false\") }"
+                processors:
+                  - mapping: "root = this\nroot.type = this.type.or(\"unknown\")\nroot.route_hint = {\"kafka\": meta(\"route_kafka\").or(\"false\"), \"amqp\": meta(\"route_amqp\").or(\"\"), \"http\": meta(\"route_http\").or(\"false\") }"
