@@ -15,7 +15,7 @@ OUTFILE="$INFILE"
 case "$INFILE" in
   *.yaml|*.yml)
     echo "Fetching yq (YAML→JSON) ..."
-    YQ=/usr/local/bin/yq
+    YQ=/tmp/yq
     if [ ! -x "$YQ" ]; then
       curl -fsSL -o "$YQ" https://github.com/mikefarah/yq/releases/download/v4.44.2/yq_linux_amd64
       chmod +x "$YQ"
