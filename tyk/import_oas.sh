@@ -9,7 +9,12 @@ for i in $(seq 1 120); do
     echo "Gateway admin API is up."; break; fi; sleep 1;
 done
 echo "POST OAS $FILE to $GW (/tyk/apis/oas?overwrite=true) ..."
-curl -fsS -H "x-tyk-authorization: $SECRET" -H 'Content-Type: application/json' \
+# auto content-type based on extension
+CT="application/json"
+case "$FILE" in
+  *.yaml|*.yml) CT="application/yaml" ;;
+esac
+curl -fsS -H "x-tyk-authorization: $SECRET" -H "Content-Type: $CT" \
   -X POST "$GW/tyk/apis/oas?overwrite=true" \
   --data-binary @"$FILE" || { echo "Import failed"; exit 1; }
 echo

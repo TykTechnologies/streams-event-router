@@ -117,7 +117,6 @@ services:
       TYK_LOGLEVEL: debug
     volumes:
       - ./tyk/policies:/opt/tyk-gateway/policies:ro
-      - ./tyk/apps:/opt/tyk-gateway/apps:ro
       - ./schemas:/work/schemas:ro
     ports:
       - "8282:8282"
@@ -127,7 +126,18 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
-  # OAS importer disabled now that we mount an API def file
+  tyk-import:
+    image: curlimages/curl:8.7.1
+    depends_on:
+      - tyk-gateway
+    environment:
+      TYK_SECRET: foo
+      GW: http://tyk-gateway:8282
+    volumes:
+      - ./tyk/oas:/oas:ro
+      - ./tyk/import_oas.sh:/import_oas.sh:ro
+    entrypoint: ["sh","/import_oas.sh","/oas/bento-router.oas.yaml"]
+    restart: "no"
 
 
 volumes:
