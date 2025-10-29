@@ -23,7 +23,7 @@ x-tyk-api-gateway:
         enabled: true
   server:
     listenPath:
-      strip: false
+      strip: true
       value: "/streams-api/"
   upstream:
     url: ""
