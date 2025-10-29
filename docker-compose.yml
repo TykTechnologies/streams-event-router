@@ -55,30 +55,24 @@ services:
       timeout: 3s
       retries: 30
 
-  streams:
-    build:
-      context: ./streams
+
+  rabbit-init:
+    image: curlimages/curl:8.7.1
     depends_on:
-      - rabbitmq
-      - labs-kafka
-      - kafka-init
-    ports:
-      - "4195:4195"
-    environment:
-      BENTO_CONFIG: /work/configs/bento/bento.local.yaml
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      RABBITMQ_QUEUE: inbound-queue
-      RABBITMQ_EXCHANGE: ""
-      RABBITMQ_ROUTING_KEY: low-priority-queue
-      KAFKA_BOOTSTRAP_SERVERS: labs-kafka:9092
-      KAFKA_TOPIC_HIGH: high-priority-topic
-      AMQP_MODE: local
-      PROTOBUF_IMPORTS: /work/schemas
-      PERSON_PROTO_IMPORTS: /work/schemas
-      DEFAULT_HTTP_URL: http://demo:8080/events
-    volumes:
-      - ./:/work
-    working_dir: /work
+      rabbitmq:
+        condition: service_healthy
+    entrypoint: sh -lc
+    command: |
+      set -e
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        curl -sf -u guest:guest http://rabbitmq:15672/api/overview >/dev/null && break || sleep 2
+      done
+      for q in inbound-queue low-priority-queue FOO EXTERNAL; do
+        echo Declaring $q
+        curl -sf -u guest:guest -H 'content-type: application/json' -X PUT           http://rabbitmq:15672/api/queues/%2F/$q           -d '{"durable":true,"auto_delete":false,"arguments":{}}' || true
+      done
+      echo 'RabbitMQ queues ready.'
+
 
   demo:
     build:
@@ -87,7 +81,6 @@ services:
     depends_on:
       - labs-kafka
       - rabbitmq
-      - streams
     environment:
       KAFKA_BROKER: labs-kafka:9092
       KAFKA_TOPIC: high-priority-topic
@@ -95,7 +88,6 @@ services:
       AMQP_ADDR: amqp://rabbitmq:5672
       AMQP_SOURCE: low-priority-queue
       AMQP_TARGET: inbound-queue
-      BENTO_URL: http://host.docker.internal:4195/inbound
     ports:
       - "8080:8080"
 
@@ -124,7 +116,6 @@ services:
       TYK_GW_STREAMING_ALLOWUNSAFE: http_server
       TYK_LOGLEVEL: debug
     volumes:
-      - ./tyk/apps:/opt/tyk-gateway/apps:ro
       - ./tyk/policies:/opt/tyk-gateway/policies:ro
       - ./schemas:/work/schemas:ro
     ports:

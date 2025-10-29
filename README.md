@@ -27,7 +27,7 @@ flowchart TD
     API2[/HTTP Ingest Proxy\n(/ingest-proxy/ → Bento)/]
   end
 
-  subgraph Bento (streams)
+  subgraph Streams (inside Tyk)
     S1[[bento_router\nAMQP background]]
     S2[[http_ingest\nHTTP path]]
   end
@@ -37,9 +37,9 @@ flowchart TD
     K[(Kafka)]
   end
 
-  UI -->|POST events| API2
-  Curl -->|POST events| API2
-  API2 -->|proxy| S2
+  UI -->|POST events| API1
+  Curl -->|POST events| API1
+  API1 -->|/streams-api/inbound| S2
   RQ -->|consume inbound-queue| S1
 
   S1 -->|ORDER_CREATED\n→ Protobuf| K
@@ -55,7 +55,6 @@ Design decisions
 - Two streams, one API: We split Streams into two logical pipelines but keep a single Tyk API.
   - `bento_router` is a background job (AMQP only) — it should start immediately and keep running.
   - `http_ingest` handles HTTP events — it mirrors the same routing and transformations as `bento_router`.
-- Stable HTTP entrypoint: In practice, http_server embedding under Streams can vary by build. To guarantee a reliable endpoint, we expose `/ingest-proxy/` as a standard Tyk proxy that forwards to Bento’s `/inbound` HTTP input.
 
 —
 
@@ -114,7 +113,7 @@ flowchart LR
 }
 ```
 
-2) Bento pipeline (excerpt from `configs/bento/bento.local.yaml`)
+2) Routing/transform excerpt (from the equivalent local config)
 
 ```yaml
 pipeline:
@@ -207,7 +206,7 @@ output:
 Prereqs: Docker. Then:
 - Start: `make compose-up`
 - UI: http://localhost:8080
-- Gateway HTTP ingest: `POST http://localhost:8282/ingest-proxy/`
+- Gateway HTTP ingest: `POST http://localhost:8282/streams-api/inbound`
 
 Smoke test
 ```bash
@@ -236,10 +235,9 @@ Stop:
 
 ## Repository layout
 
-- `configs/bento/bento.local.yaml` — local pipeline and routing (Kafka Protobuf; AMQP/HTTP JSON)
+- `configs/bento/bento.local.yaml` — local (parity) config for reference
 - `configs/bento/bento.yaml` — optional cloud flip config
 - `tyk/oas/bento-router.oas.json` — Streams OAS (two streams)
-- `tyk/apps/ingest-proxy.json` — Gateway classic API: `/ingest-proxy/` → Bento HTTP input
 - `demo/` — UI and server (SSE + Protobuf decode)
 - `streams/` — Bento wrapper
 - `schemas/` — `.proto` files

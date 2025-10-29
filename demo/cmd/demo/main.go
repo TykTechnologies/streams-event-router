@@ -52,10 +52,8 @@ func main() {
     amqpBrokerAddress := env("AMQP_ADDR", "amqp://localhost:5672")
     amqpSourceAddress := env("AMQP_SOURCE", "low-priority-queue")
     amqpTargetAddress := env("AMQP_TARGET", "inbound-queue")
-    bentoURL := env("BENTO_URL", "http://streams:4195/inbound")
-    // Full Gateway path = API listenPath + http_server path from x-tyk-streaming
-    // listenPath: /streams-api/, http_server.path: /streams/inbound
-    tykURL := env("TYK_STREAMS_URL", "http://tyk-gateway:8282/ingest-proxy/")
+    // Tyk Streams HTTP input: listenPath (/streams-api/) + http_server.path (/event)
+    tykURL := env("TYK_STREAMS_URL", "http://tyk-gateway:8282/streams-api/event/")
 
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
@@ -66,7 +64,7 @@ func main() {
     go consumeKafka(ctx, kafkaBrokerAddress, kafkaTopic, kafkaGroupID)
     go consumeAMQP(ctx, amqpBrokerAddress, amqpSourceAddress)
     // Manual-only demo: no automated AMQP tick sender
-    go monitorGatewayHealth(ctx, kafkaBrokerAddress, amqpBrokerAddress, amqpTargetAddress, bentoURL)
+    go monitorGatewayHealth(ctx, kafkaBrokerAddress, amqpBrokerAddress, amqpTargetAddress, tykURL)
 
     http.HandleFunc("/", serveIndex)
     http.HandleFunc("/sse", serveSSE)
@@ -101,7 +99,7 @@ func main() {
         if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
             w.WriteHeader(http.StatusBadRequest); _, _ = w.Write([]byte("invalid json")); return
         }
-        postJSON(w, bentoURL, m)
+        postJSON(w, tykURL, m)
     })
     http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
         // Simple collector endpoint used by Bento default HTTP output
@@ -218,7 +216,7 @@ func sendOneInboundAMQP(addr, target string) error {
 }
 
 // ---- Health ----
-func monitorGatewayHealth(ctx context.Context, broker, amqpAddr, amqpTarget, bentoURL string) {
+func monitorGatewayHealth(ctx context.Context, broker, amqpAddr, amqpTarget, streamsURL string) {
     ticker := time.NewTicker(5*time.Second); defer ticker.Stop()
     for {
         select {
@@ -227,7 +225,7 @@ func monitorGatewayHealth(ctx context.Context, broker, amqpAddr, amqpTarget, ben
             setKafkaStatus(checkKafka(broker))
             setAMQPStatus(checkAMQP(amqpAddr))
             setExternalAMQPStatus(checkExternalAMQP(amqpAddr, amqpTarget))
-            setBentoHTTPStatus(checkBentoHTTP(bentoURL))
+            setBentoHTTPStatus(checkStreamsHTTP(streamsURL))
         }
     }
 }
@@ -327,19 +325,9 @@ func postJSON(w http.ResponseWriter, url string, body any) {
     b, _ := json.Marshal(body)
     candidates := []string{
         url,
-        // Prefer dedicated gateway proxy path (ingest-proxy)
-        "http://tyk-gateway:8282/ingest-proxy/",
-        "http://localhost:8282/ingest-proxy/",
         // Tyk Streams via API base + http_server path
-        "http://tyk-gateway:8282/streams-api/inbound",
-        "http://localhost:8282/streams-api/inbound",
-        // Legacy guesses
-        "http://tyk-gateway:8282/streams/inbound",
-        "http://localhost:8282/streams/inbound",
-        // Bento direct
-        "http://streams:4195/inbound",
-        "http://host.docker.internal:4195/inbound",
-        "http://localhost:4195/inbound",
+        "http://tyk-gateway:8282/streams-api/event/",
+        "http://localhost:8282/streams-api/event/",
     }
     var lastErr error
     // Allow for pipeline latency (LOW path sleeps 5s), so use a generous timeout.
@@ -366,8 +354,8 @@ func postJSON(w http.ResponseWriter, url string, body any) {
 }
 
 // Simple readiness check for Bento HTTP input
-func checkBentoHTTP(url string) bool {
-    candidates := []string{url, "http://streams:4195/inbound", "http://host.docker.internal:4195/inbound", "http://localhost:4195/inbound"}
+func checkStreamsHTTP(url string) bool {
+    candidates := []string{url, "http://tyk-gateway:8282/streams-api/event/", "http://localhost:8282/streams-api/event/"}
     client := &http.Client{Timeout: 1500 * time.Millisecond}
     for _, u := range candidates {
         req, _ := http.NewRequest(http.MethodOptions, u, nil)
@@ -384,13 +372,13 @@ var indexHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Event Gateway Demo</title>
+<title>Streams Event Router Demo</title>
 <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 p-4">
   <div class="max-w-3xl mx-auto">
     <h1 class="text-3xl font-bold mb-4">Event Gateway Demo</h1>
-    <p class="mb-4 text-gray-700">This page demonstrates an event router built with Bento. Buttons emit events via a specific input, the pipeline sets routing flags in processors, and each output applies its own transformation before delivery.</p>
+    <p class="mb-4 text-gray-700">This page demonstrates an event router built with Tyk Streams. Buttons emit events via the HTTP stream, the pipeline sets routing flags in processors, and each output applies its own transformation before delivery.</p>
 <div class="mb-4 p-3 bg-slate-50 border border-slate-200 rounded">
       <strong>Routing Rules</strong>
       <ul class="list-disc ml-6 mt-2">
@@ -418,7 +406,7 @@ var indexHTML = `<!DOCTYPE html>
         <div id="inputs" class="p-4 mb-4 border-2 border-gray-300 rounded-md">
       <h2 class="text-xl font-semibold mb-2">Inputs</h2>
       <div id="httpInputBlock" class="p-4 mb-2 rounded-md border-2 border-gray-300">
-        <h3 class="text-lg font-medium">HTTP Input (POST /streams/inbound)</h3>
+        <h3 class="text-lg font-medium">HTTP Input (POST /streams-api/event/)</h3>
         <div id="httpInputStatus" class="text-sm mt-1">Checking status...</div>
       </div>
       <div id="amqpInBlock" class="p-4 mb-2 rounded-md border-2 border-gray-300">
