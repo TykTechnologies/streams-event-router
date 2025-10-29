@@ -130,6 +130,8 @@ services:
     image: curlimages/curl:8.7.1
     depends_on:
       - tyk-gateway
+      rabbit-init:
+        condition: service_completed_successfully
     environment:
       TYK_SECRET: foo
       GW: http://tyk-gateway:8282
