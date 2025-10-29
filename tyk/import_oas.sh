@@ -10,16 +10,30 @@ for i in $(seq 1 120); do
     echo "Gateway admin API is up."; break; fi; sleep 1;
 done
 
+# Ensure yq is available (used for YAML→JSON and JSON filtering)
+YQ=/tmp/yq
+if [ ! -x "$YQ" ]; then
+  echo "Fetching yq (YAML/JSON tool) ..."
+  curl -fsSL -o "$YQ" https://github.com/mikefarah/yq/releases/download/v4.44.2/yq_linux_amd64
+  chmod +x "$YQ"
+fi
+
+# Delete any prior APIs with the same name to avoid listenPath collisions
+API_NAME="Bento Router (Streams)"
+echo "Cleaning prior APIs named: $API_NAME ..."
+EXISTING_IDS=$(
+  curl -fsS -H "x-tyk-authorization: $SECRET" "$GW/tyk/apis" \
+  | "$YQ" -p=json -o=json '.[] | select(.name == strenv(API_NAME)) | .api_id' 2>/dev/null || true
+)
+for id in $EXISTING_IDS; do
+  echo "Deleting existing API id=$id"
+  curl -fsS -H "x-tyk-authorization: $SECRET" -X DELETE "$GW/tyk/apis/oas/$id" >/dev/null || true
+done
+
 # If a YAML file is provided, convert it to JSON using a tiny yq binary fetched via curl.
 OUTFILE="$INFILE"
 case "$INFILE" in
   *.yaml|*.yml)
-    echo "Fetching yq (YAML→JSON) ..."
-    YQ=/tmp/yq
-    if [ ! -x "$YQ" ]; then
-      curl -fsSL -o "$YQ" https://github.com/mikefarah/yq/releases/download/v4.44.2/yq_linux_amd64
-      chmod +x "$YQ"
-    fi
     echo "Converting YAML to JSON ..."
     OUTFILE=/tmp/oas.json
     "$YQ" -o=json "$INFILE" > "$OUTFILE"
