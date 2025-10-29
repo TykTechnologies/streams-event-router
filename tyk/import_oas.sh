@@ -22,7 +22,7 @@ case "$INFILE" in
     fi
     echo "Converting YAML to JSON ..."
     OUTFILE=/tmp/oas.json
-    "$YQ" -o=json \'$INFILE' > "$OUTFILE"
+    "$YQ" -o=json "$INFILE" > "$OUTFILE"
     ;;
 esac
 
