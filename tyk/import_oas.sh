@@ -2,7 +2,7 @@
 set -eu
 GW=${GW:-http://localhost:8282}
 SECRET=${TYK_SECRET:-foo}
-INFILE=${1:-/oas/bento-router.oas.json}
+INFILE=${1:-/oas/bento-router.oas.yaml}
 
 echo "Waiting for gateway at $GW ..."
 for i in $(seq 1 120); do
@@ -10,27 +10,19 @@ for i in $(seq 1 120); do
     echo "Gateway admin API is up."; break; fi; sleep 1;
 done
 
-# Convert YAML → JSON when needed; Gateway import expects JSON body
+# If a YAML file is provided, convert it to JSON using a tiny yq binary fetched via curl.
 OUTFILE="$INFILE"
-CT="application/json"
 case "$INFILE" in
   *.yaml|*.yml)
-    echo "Converting YAML to JSON for import ..."
+    echo "Fetching yq (YAML→JSON) ..."
+    YQ=/usr/local/bin/yq
+    if [ ! -x "$YQ" ]; then
+      curl -fsSL -o "$YQ" https://github.com/mikefarah/yq/releases/download/v4.44.2/yq_linux_amd64
+      chmod +x "$YQ"
+    fi
+    echo "Converting YAML to JSON ..."
     OUTFILE=/tmp/oas.json
-    python3 - << 'PY' "$INFILE" "$OUTFILE"
-import sys, json
-try:
-    import yaml  # type: ignore
-except Exception:
-    sys.stderr.write('PyYAML missing')
-    sys.exit(3)
-src, dst = sys.argv[1], sys.argv[2]
-with open(src, 'r') as f:
-    data = yaml.safe_load(f)
-with open(dst, 'w') as g:
-    json.dump(data, g, separators=(',', ':'))
-print('Wrote', dst)
-PY
+    "$YQ" -o=json \'$INFILE' > "$OUTFILE"
     ;;
 esac
 
