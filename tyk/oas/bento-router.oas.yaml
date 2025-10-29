@@ -31,13 +31,11 @@ x-tyk-streaming:
   streams:
     bento_router:
       input:
-        broker:
-          inputs:
-            - amqp_0_9:
-                prefetch_count: 64
-                queue: "inbound-queue"
-                urls:
-                  - "amqp://guest:guest@rabbitmq:5672/"
+        amqp_0_9:
+          prefetch_count: 64
+          queue: "inbound-queue"
+          urls:
+            - "amqp://guest:guest@rabbitmq:5672/"
       pipeline:
         processors:
           - switch:
@@ -106,13 +104,11 @@ x-tyk-streaming:
                 - mapping: "root = this\nroot.type = this.type.or(\"unknown\")\nroot.route_hint = {\"kafka\": meta(\"route_kafka\").or(\"false\"), \"amqp\": meta(\"route_amqp\").or(\"\"), \"http\": meta(\"route_http\").or(\"false\") }"
     http_ingest:
       input:
-        broker:
-          inputs:
-            - http_server:
-                allowed_verbs:
-                  - POST
-                path: /event
-                timeout: 20s
+        http_server:
+          allowed_verbs:
+            - POST
+          path: /event
+          timeout: 20s
       pipeline:
         processors:
           - switch:
