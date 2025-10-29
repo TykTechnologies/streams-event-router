@@ -1,0 +1,222 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Bento Router (Tyk Streams)",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/event": {
+      "post": {
+        "responses": {
+          "202": {
+            "description": "Accepted"
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "http://tyk-gateway:8282/streams-api/"
+    }
+  ],
+  "x-tyk-api-gateway": {
+    "info": {
+      "dbId": "68fbd728058f859047713fcb",
+      "id": "4b6aa8b4c9114e004053a0a2e1518f1c",
+      "name": "Bento Router (Streams)",
+      "orgId": "68f0a562058f8579f2822a0a",
+      "state": {
+        "active": true,
+        "internal": true
+      }
+    },
+    "middleware": {
+      "global": {
+        "contextVariables": {
+          "enabled": true
+        }
+      }
+    },
+    "server": {
+      "listenPath": {
+        "strip": false,
+        "value": "/streams-api/"
+      }
+    },
+    "upstream": {
+      "url": ""
+    }
+  },
+  "x-tyk-streaming": {
+    "streams": {
+      "bento_router": {
+        "input": {
+          "broker": {
+            "inputs": [
+              {
+                "http_server": {
+                  "allowed_verbs": [
+                    "POST"
+                  ],
+                  "path": "/",
+                  "timeout": "20s",
+                  "address": ""
+                }
+              },
+              {
+                "amqp_0_9": {
+                  "prefetch_count": 64,
+                  "queue": "inbound-queue",
+                  "urls": [
+                    "amqp://guest:guest@rabbitmq:5672/"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "output": {
+          "switch": {
+            "cases": [
+              {
+                "check": "meta(\"route_kafka\") == \"true\"",
+                "continue": true,
+                "output": {
+                  "kafka": {
+                    "addresses": [
+                      "labs-kafka:9092"
+                    ],
+                    "max_in_flight": 64,
+                    "topic": "high-priority-topic"
+                  },
+                  "processors": [
+                    {
+                      "mapping": "root.id = this.id.string().catch(uuid_v4())\nroot.source = this.source.string().catch(\"unknown\")\nroot.type = this.type.string().catch(\"UNKNOWN\").uppercase()\nroot.data = this.data.or(this)\nroot.timestamp = now().ts_format(\"2006-01-02T15:04:05Z07:00\")"
+                    },
+                    {
+                      "protobuf": {
+                        "import_paths": [
+                          "/work/schemas"
+                        ],
+                        "message": "event.Event",
+                        "operator": "from_json"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "check": "meta(\"route_amqp\") == \"amqp_local\"",
+                "continue": true,
+                "output": {
+                  "amqp_0_9": {
+                    "exchange": "",
+                    "key": "low-priority-queue",
+                    "max_in_flight": 64,
+                    "urls": [
+                      "amqp://guest:guest@rabbitmq:5672/"
+                    ]
+                  }
+                }
+              },
+              {
+                "check": "meta(\"route_http\").or(\"false\") == \"true\"",
+                "continue": false,
+                "output": {
+                  "http_client": {
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "max_in_flight": 64,
+                    "url": "http://demo:8080/events",
+                    "verb": "POST"
+                  },
+                  "processors": [
+                    {
+                      "mapping": "root = this\nroot.type = this.type.or(\"unknown\")\nroot.route_hint = {\"kafka\": meta(\"route_kafka\").or(\"false\"), \"amqp\": meta(\"route_amqp\").or(\"\"), \"http\": meta(\"route_http\").or(\"false\") }"
+                    }
+                  ]
+                }
+              }
+            ],
+            "retry_until_success": true,
+            "strict_mode": false
+          }
+        },
+        "pipeline": {
+          "processors": [
+            {
+              "switch": [
+                {
+                  "check": "this.specversion.string().catch(\"\") != \"\"",
+                  "processors": [
+                    {
+                      "json_schema": {
+                        "schema": "{\"$schema\": \"http://json-schema.org/draft-07/schema#\", \"properties\": {\"data\": {\"type\": [\"object\", \"array\", \"string\", \"number\", \"boolean\", \"null\"]}, \"id\": {\"type\": \"string\"}, \"source\": {\"type\": \"string\"}, \"type\": {\"type\": \"string\"}}, \"required\": [\"id\", \"source\", \"type\"], \"type\": \"object\"}"
+                      }
+                    },
+                    {
+                      "mapping": "root.id = this.id.string()\nroot.source = this.source.string()\nroot.type = this.type.string().uppercase()\nroot.data = this.data\nroot.timestamp = now().ts_format(\"2006-01-02T15:04:05Z07:00\")\nmeta is_ce = \"true\""
+                    }
+                  ]
+                },
+                {
+                  "processors": [
+                    {
+                      "mapping": "meta is_ce = \"false\""
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "switch": [
+                {
+                  "check": "this.type.string().catch(\"\").uppercase() == \"BROADCAST_DEMO\"",
+                  "processors": [
+                    {
+                      "mapping": "meta route_kafka = \"true\"\nmeta route_amqp = \"amqp_local\"\nmeta route_http = \"true\""
+                    }
+                  ]
+                },
+                {
+                  "check": "this.type.string().catch(\"\").uppercase() == \"ORDER_CREATED\"",
+                  "processors": [
+                    {
+                      "mapping": "meta route_kafka = \"true\""
+                    }
+                  ]
+                },
+                {
+                  "check": "this.type.string().catch(\"\").uppercase() == \"USER_REGISTERED\"",
+                  "processors": [
+                    {
+                      "mapping": "meta route_amqp = \"amqp_local\""
+                    }
+                  ]
+                },
+                {
+                  "check": "this.type.string().catch(\"\").uppercase() == \"AUDIT_LOG\"",
+                  "processors": [
+                    {
+                      "mapping": "meta route_http = \"true\""
+                    }
+                  ]
+                },
+                {
+                  "processors": [
+                    {
+                      "mapping": "meta route_http = meta(\"route_http\").or(\"true\")"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "threads": -1
+        }
+      }
+    }
+  }
+}
