@@ -24,7 +24,6 @@ flowchart TD
 
   subgraph Tyk Gateway
     API1[/Streams API\n(/streams-api)/]
-    API2[/Diagnostics API\n(/diag → demo)/]
   end
 
   subgraph Streams (inside Gateway)
@@ -52,7 +51,6 @@ flowchart TD
 
 Design decisions
 - Two streams, one API: a background AMQP stream (`bento_router`) and an HTTP stream (`http_ingest`). Both share the same routing/transforms.
-- A separate Diagnostics API proxies the demo UI at `/diag/` for quick proxy-plane verification.
 
 —
 
@@ -217,16 +215,11 @@ output:
 Prereqs: Docker. Then:
 - Start: `docker compose up -d --build`
 - UI: http://localhost:8080
-- Gateway (host ports):
-  - Streams API: http://localhost:18282/streams-api
-  - Admin API:   http://localhost:19696/tyk/apis
+- Streams API (host): http://localhost:18282/streams-api
+- Admin API (host):   http://localhost:19696/tyk/apis
 
-Smoke tests (no trailing slash)
+Smoke test (no trailing slash)
 ```bash
-# Proxy‑plane sanity (Diagnostics API → demo UI)
-curl -i http://localhost:18282/diag/
-
-# Streams HTTP ingest (ORDER_CREATED → Kafka)
 curl -i -H 'Content-Type: application/json' \
   --data '{"id":"1","source":"demo","type":"ORDER_CREATED","specversion":"1.0","data":{}}' \
   http://localhost:18282/streams-api/event
@@ -259,7 +252,6 @@ Stop:
 ## Repository layout
 
 - `tyk/oas/bento-router.oas.yaml` — Tyk Streams OAS (two streams)
-- `tyk/oas/diag.oas.yaml` — Diagnostics OAS (plain proxy at /diag/ → demo)
 - `tyk/import_oas.sh` — curl‑only importer: YAML→JSON, dedup + import + reload
 - `docker-compose.yml` — Gateway (ports 18282/19696), RabbitMQ, Kafka/ZooKeeper, demo UI
 - `schemas/` — Protobuf schemas (event + testing.Person)
