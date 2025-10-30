@@ -3,6 +3,7 @@ set -eu
 GW=${GW:-http://localhost:8282}
 SECRET=${TYK_SECRET:-foo}
 INFILE=${1:-/oas/bento-router.oas.yaml}
+EXTRA=${EXTRA_OAS:-/oas/diag.oas.yaml}
 
 echo "Waiting for gateway at $GW ..."
 for i in $(seq 1 120); do
@@ -47,3 +48,17 @@ echo
 echo "Reloading gateway ..."
 curl -fsS -H "x-tyk-authorization: $SECRET" -X GET "$GW/tyk/reload" || true
 echo
+
+# Import extra OAS if present (e.g., Diagnostics API)
+if [ -f "$EXTRA" ]; then
+  echo "Importing extra OAS: $EXTRA ..."
+  OUT2=/tmp/extra.json
+  "$YQ" -o=json "$EXTRA" > "$OUT2"
+  curl -fsS -H "x-tyk-authorization: $SECRET" -H "Content-Type: application/json" \
+    -X POST "$GW/tyk/apis/oas?overwrite=true" \
+    --data-binary @"$OUT2" || { echo "Extra import failed"; exit 1; }
+  echo
+  echo "Reloading gateway ..."
+  curl -fsS -H "x-tyk-authorization: $SECRET" -X GET "$GW/tyk/reload" || true
+  echo
+fi

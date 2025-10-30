@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info:
+  title: Diagnostics API
+  version: 1.0.0
+servers:
+  - url: "http://tyk-gateway:8282/diag/"
+paths:
+  /:
+    get:
+      summary: Upstream demo root
+      responses:
+        200:
+          description: OK
+x-tyk-api-gateway:
+  info:
+    name: Diagnostics API
+    orgId: default
+    state:
+      active: true
+      internal: false
+  server:
+    listenPath:
+      strip: true
+      value: /diag/
+  upstream:
+    url: http://demo:8080

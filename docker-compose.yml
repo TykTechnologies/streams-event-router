@@ -120,8 +120,8 @@ services:
       - ./tyk/policies:/opt/tyk-gateway/policies:ro
       - ./schemas:/work/schemas:ro
     ports:
-      - "8282:8282"
-      - "9696:9696"
+      - "18282:8282"
+      - "19696:9696"
 
   redis:
     image: redis:7-alpine
