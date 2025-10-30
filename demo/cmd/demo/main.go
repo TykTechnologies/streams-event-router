@@ -53,7 +53,7 @@ func main() {
     amqpSourceAddress := env("AMQP_SOURCE", "low-priority-queue")
     amqpTargetAddress := env("AMQP_TARGET", "inbound-queue")
     // Tyk Streams HTTP input: listenPath (/streams-api/) + http_server.path (/event)
-    tykURL := env("TYK_STREAMS_URL", "http://tyk-gateway:8282/streams-api/event/")
+    tykURL := env("TYK_STREAMS_URL", "http://tyk-gateway:8282/streams-api/event")
 
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
@@ -397,7 +397,7 @@ var indexHTML = `<!DOCTYPE html>
         <div id="inputs" class="p-4 mb-4 border-2 border-gray-300 rounded-md">
       <h2 class="text-xl font-semibold mb-2">Inputs</h2>
       <div id="httpInputBlock" class="p-4 mb-2 rounded-md border-2 border-gray-300">
-        <h3 class="text-lg font-medium">HTTP Input (POST /streams-api/event/)</h3>
+        <h3 class="text-lg font-medium">HTTP Input (POST /streams-api/event)</h3>
         <div id="httpInputStatus" class="text-sm mt-1">Checking status...</div>
       </div>
       <div id="amqpInBlock" class="p-4 mb-2 rounded-md border-2 border-gray-300">

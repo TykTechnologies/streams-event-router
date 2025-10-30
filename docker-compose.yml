@@ -88,7 +88,7 @@ services:
       AMQP_ADDR: amqp://rabbitmq:5672
       AMQP_SOURCE: low-priority-queue
       AMQP_TARGET: inbound-queue
-      TYK_STREAMS_URL: http://tyk-gateway:8282/streams-api/event/
+      TYK_STREAMS_URL: http://tyk-gateway:8282/streams-api/event
     ports:
       - "8080:8080"
 
