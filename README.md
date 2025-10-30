@@ -1,19 +1,19 @@
-# Streams Event Router POC (Bento + Tyk) — Design, Docs, and Demo
+# Streams Event Router POC (Tyk Streams) — Design, Docs, and Demo
 
-This repository delivers an “Event Gateway” that:
+This repository delivers an “Event Gateway” built with Tyk Streams that:
 - Accepts events via RabbitMQ (AMQP 0.9) and HTTP
 - Validates and normalizes CloudEvents when appropriate
 - Applies routing decisions in processors (business‑level types)
 - Applies sink‑specific transformations in outputs (Kafka → Protobuf; others → JSON)
 - Fan‑outs to multiple sinks with a single event
 
-It comes with a self‑contained docker‑compose stack and a demo UI.
+It comes with a self‑contained docker‑compose stack and a demo UI. No standalone Bento process is used; all routing happens inside the Gateway via the x‑tyk‑streaming OAS extension.
 
 —
 
 ## Architecture
 
-High‑level components
+High‑level components (current implementation)
 
 ```mermaid
 flowchart TD
@@ -23,13 +23,13 @@ flowchart TD
   end
 
   subgraph Tyk Gateway
-    API1[/Streams API\n(x-tyk-streaming)/]
-    API2[/HTTP Ingest Proxy\n(/ingest-proxy/ → Bento)/]
+    API1[/Streams API\n(/streams-api)/]
+    API2[/Diagnostics API\n(/diag → demo)/]
   end
 
-  subgraph Streams (inside Tyk)
+  subgraph Streams (inside Gateway)
     S1[[bento_router\nAMQP background]]
-    S2[[http_ingest\nHTTP path]]
+    S2[[http_ingest\nHTTP path /event]]
   end
 
   subgraph Brokers
@@ -37,9 +37,8 @@ flowchart TD
     K[(Kafka)]
   end
 
-  UI -->|POST events| API1
-  Curl -->|POST events| API1
-  API1 -->|/streams-api/inbound| S2
+  UI -->|POST /streams-api/event| API1
+  Curl -->|POST /streams-api/event| API1
   RQ -->|consume inbound-queue| S1
 
   S1 -->|ORDER_CREATED\n→ Protobuf| K
@@ -52,9 +51,8 @@ flowchart TD
 ```
 
 Design decisions
-- Two streams, one API: We split Streams into two logical pipelines but keep a single Tyk API.
-  - `bento_router` is a background job (AMQP only) — it should start immediately and keep running.
-  - `http_ingest` handles HTTP events — it mirrors the same routing and transformations as `bento_router`.
+- Two streams, one API: a background AMQP stream (`bento_router`) and an HTTP stream (`http_ingest`). Both share the same routing/transforms.
+- A separate Diagnostics API proxies the demo UI at `/diag/` for quick proxy-plane verification.
 
 —
 
@@ -85,32 +83,47 @@ flowchart LR
 
 ## Key configs (embedded excerpts)
 
-1) Streams OAS — two streams under one API (shortened for readability)
+1) Streams OAS — two streams under one API (YAML, shortened)
 
-```json
-{
-  "openapi": "3.0.3",
-  "servers": [{ "url": "http://tyk-gateway:8282/streams-api/" }],
-  "x-tyk-api-gateway": {
-    "info": { "name": "Bento Router (Streams)", "state": { "active": true } },
-    "server": { "listenPath": { "strip": true, "value": "/streams-api/" } }
-  },
-  "x-tyk-streaming": {
-    "allow_unsafe": ["http_server"],
-    "streams": {
-      "bento_router": {
-        "input": { "broker": { "inputs": [ { "amqp_0_9": { "urls": ["amqp://guest:guest@rabbitmq:5672/"], "queue": "inbound-queue", "prefetch_count": 64 } } ] } },
-        "pipeline": { "processors": [ /* CE validation + routing switches */ ] },
-        "output": { "switch": { /* Kafka→Protobuf, AMQP/HTTP→JSON */ } }
-      },
-      "http_ingest": {
-        "input": { "broker": { "inputs": [ { "http_server": { "path": "/inbound", "allowed_verbs": ["POST"], "timeout": "20s" } } ] } },
-        "pipeline": { "processors": [ /* same CE + routing */ ] },
-        "output": { "switch": { /* same outputs */ } }
-      }
-    }
-  }
-}
+```yaml
+openapi: 3.0.3
+servers:
+  - url: "http://tyk-gateway:8282/streams-api/"
+x-tyk-api-gateway:
+  info:
+    name: Bento Router (Streams)
+    orgId: default
+    state:
+      active: true
+      internal: false
+  server:
+    listenPath:
+      strip: true
+      value: /streams-api/
+x-tyk-streaming:
+  streams:
+    bento_router:
+      input:
+        amqp_0_9:
+          urls: [ "amqp://guest:guest@rabbitmq:5672/" ]
+          queue: inbound-queue
+          prefetch_count: 64
+      pipeline:     # CE validation + routing switches
+        processors: [ ... ]
+      output:
+        switch:      # Kafka→Protobuf, AMQP/HTTP→JSON
+          cases: [ ... ]
+    http_ingest:
+      input:
+        http_server:
+          path: /event
+          allowed_verbs: [ POST ]
+          timeout: 20s
+      pipeline:     # same CE + routing
+        processors: [ ... ]
+      output:
+        switch:      # same outputs
+          cases: [ ... ]
 ```
 
 2) Routing/transform excerpt (from the equivalent local config)
@@ -190,54 +203,67 @@ output:
 
 ## How the demo works
 
-- UI (http://localhost:8080) offers buttons that POST JSON events.
-- The server posts to the Gateway first at `/ingest-proxy/`.
-  - Gateway proxies to Bento’s HTTP input at `/inbound`.
-  - If the Gateway path were unavailable, the app falls back to Bento directly to keep the demo smooth.
+- UI (http://localhost:8080) offers buttons that POST JSON CloudEvents to the Streams API.
+- The server POSTs to `TYK_STREAMS_URL` (inside Docker: `http://tyk-gateway:8282/streams-api/event`). No fallback is used.
 - Outputs render in real time:
-  - Kafka: Protobuf decoded into JSON (generated Go types from `schemas/`).
+  - Kafka: Protobuf decoded to JSON via generated Go types from `schemas/`.
   - RabbitMQ: JSON lines.
-  - HTTP: the demo collects and displays the request body.
+  - HTTP: the demo collects at `/events` and displays bodies.
 
 —
 
 ## Run it
 
 Prereqs: Docker. Then:
-- Start: `make compose-up`
+- Start: `docker compose up -d --build`
 - UI: http://localhost:8080
-- Gateway HTTP ingest: `POST http://localhost:8282/streams-api/inbound`
+- Gateway (host ports):
+  - Streams API: http://localhost:18282/streams-api
+  - Admin API:   http://localhost:19696/tyk/apis
 
-Smoke test
+Smoke tests (no trailing slash)
 ```bash
+# Proxy‑plane sanity (Diagnostics API → demo UI)
+curl -i http://localhost:18282/diag/
+
+# Streams HTTP ingest (ORDER_CREATED → Kafka)
 curl -i -H 'Content-Type: application/json' \
-  --data '{"id":"1","source":"demo","type":"AUDIT_LOG","specversion":"1.0","data":{}}' \
-  http://localhost:8282/ingest-proxy/
+  --data '{"id":"1","source":"demo","type":"ORDER_CREATED","specversion":"1.0","data":{}}' \
+  http://localhost:18282/streams-api/event
 ```
 
 Stop:
-- `make compose-down`
+- `docker compose down -v --remove-orphans`
 
 —
 
 ## Troubleshooting tips
 
-- RabbitMQ not ready yet
-  - You might briefly see connection refused; the AMQP stream retries until `inbound-queue` is available.
+- Trailing slash
+  - The HTTP stream binds `/event` (no trailing slash). `/streams-api/event/` will 404.
 
-- HTTP path returns 404
-  - Use the supported endpoint `/ingest-proxy/` (Gateway proxy → Bento HTTP input).
+- First probe 404
+  - The importer creates APIs on startup. If a request hits before import, 404 is expected once; re‑emit or `docker compose run --rm tyk-import` to force re‑import.
 
-- Protobuf path
-  - Gateway mounts `./schemas` at `/work/schemas` so Protobuf encoding works from inside the Streams pipeline.
+- Duplicate listen paths
+  - The importer deletes any pre‑existing Streams APIs (by name and by listen path prefix) to avoid auto‑suffixed paths.
+
+- RabbitMQ readiness
+  - Queues are declared by `rabbit-init` before import; transient `NOT_FOUND - inbound-queue` errors should disappear on next retry.
+
+- Protobuf mapping
+  - Gateway mounts `./schemas` to `/work/schemas` so the `protobuf` processor can load descriptors.
 
 —
 
 ## Repository layout
 
-- `configs/bento/bento.local.yaml` — local (parity) config for reference
-- `configs/bento/bento.yaml` — optional cloud flip config
-- `tyk/oas/bento-router.oas.json` — Streams OAS (two streams)
+- `tyk/oas/bento-router.oas.yaml` — Tyk Streams OAS (two streams)
+- `tyk/oas/diag.oas.yaml` — Diagnostics OAS (plain proxy at /diag/ → demo)
+- `tyk/import_oas.sh` — curl‑only importer: YAML→JSON, dedup + import + reload
+- `docker-compose.yml` — Gateway (ports 18282/19696), RabbitMQ, Kafka/ZooKeeper, demo UI
+- `schemas/` — Protobuf schemas (event + testing.Person)
+- `definitions.json` — RabbitMQ definitions (declares required queues)
 - `demo/` — UI and server (SSE + Protobuf decode)
 - `streams/` — Bento wrapper
 - `schemas/` — `.proto` files
