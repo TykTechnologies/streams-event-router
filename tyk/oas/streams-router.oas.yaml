@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Bento Router (Tyk Streams)
+  title: Event Router (Tyk Streams)
   version: 1.0.0
 paths:
   /event:
@@ -12,7 +12,7 @@ servers:
   - url: "http://tyk-gateway:8282/streams-api/"
 x-tyk-api-gateway:
   info:
-    name: Bento Router (Streams)
+    name: Event Router (Streams)
     orgId: default
     state:
       active: true
@@ -29,7 +29,7 @@ x-tyk-api-gateway:
     url: ""
 x-tyk-streaming:
   streams:
-    bento_router:
+    amqp_ingest:
       input:
         amqp_0_9:
           prefetch_count: 64

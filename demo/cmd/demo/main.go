@@ -30,7 +30,7 @@ var (
     kafkaUp        bool
     amqpUp         bool
     amqpExternalUp bool
-    bentoHTTPUp    bool
+    httpInputUp    bool
     statusMu       sync.Mutex
 
     sseClients   []chan SSEEvent
@@ -63,12 +63,12 @@ func main() {
 
     go consumeKafka(ctx, kafkaBrokerAddress, kafkaTopic, kafkaGroupID)
     go consumeAMQP(ctx, amqpBrokerAddress, amqpSourceAddress)
-    // Manual-only demo: no automated AMQP tick sender
+    // Health monitor for brokers + HTTP input
     go monitorGatewayHealth(ctx, kafkaBrokerAddress, amqpBrokerAddress, amqpTargetAddress, tykURL)
 
     http.HandleFunc("/", serveIndex)
     http.HandleFunc("/sse", serveSSE)
-    // Emit endpoints -> send events to Bento HTTP input
+    // Emit endpoints -> send events to Streams HTTP input
     http.HandleFunc("/emit/order-created", func(w http.ResponseWriter, r *http.Request) {
         sendCE(w, tykURL, "ORDER_CREATED", map[string]any{"orderId": time.Now().UnixNano()})
     })
@@ -102,7 +102,7 @@ func main() {
         postJSON(w, tykURL, m)
     })
     http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
-        // Simple collector endpoint used by Bento default HTTP output
+        // Simple collector endpoint used by HTTP output
         b := mustReadAllLimit(r.Body, 1<<20)
         broadcastEvent(SSEEvent{EventType: "outputHttpMessage", Data: fmt.Sprintf("HTTP received: %s", string(b))})
         w.WriteHeader(http.StatusAccepted)
@@ -225,7 +225,7 @@ func monitorGatewayHealth(ctx context.Context, broker, amqpAddr, amqpTarget, str
             setKafkaStatus(checkKafka(broker))
             setAMQPStatus(checkAMQP(amqpAddr))
             setExternalAMQPStatus(checkExternalAMQP(amqpAddr, amqpTarget))
-            setBentoHTTPStatus(checkStreamsHTTP(streamsURL))
+            setHTTPInputStatus(checkStreamsHTTP(streamsURL))
         }
     }
 }
@@ -250,7 +250,7 @@ func checkExternalAMQP(addr, target string) bool {
 func setKafkaStatus(up bool) { statusMu.Lock(); ch := (kafkaUp != up); kafkaUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"outputKafkaStatus", boolToStatus(up)}) } }
 func setAMQPStatus(up bool) { statusMu.Lock(); ch := (amqpUp != up); amqpUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"outputAmqpStatus", boolToStatus(up)}) } }
 func setExternalAMQPStatus(up bool) { statusMu.Lock(); ch := (amqpExternalUp != up); amqpExternalUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"inputAmqpStatus", boolToStatus(up)}) } }
-func setBentoHTTPStatus(up bool) { statusMu.Lock(); ch := (bentoHTTPUp != up); bentoHTTPUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"inputHttpStatus", boolToStatus(up)}) } }
+func setHTTPInputStatus(up bool) { statusMu.Lock(); ch := (httpInputUp != up); httpInputUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"inputHttpStatus", boolToStatus(up)}) } }
 
 func boolToStatus(up bool) string { if up { return "UP" }; return "DOWN" }
 
@@ -269,7 +269,7 @@ func serveSSE(w http.ResponseWriter, r *http.Request) {
     defer func() {
         sseClientsMu.Lock(); for i, ch := range sseClients { if ch == clientCh { sseClients = append(sseClients[:i], sseClients[i+1:]...); break } }; sseClientsMu.Unlock(); close(clientCh)
     }()
-    statusMu.Lock(); ks, as, es, bs := boolToStatus(kafkaUp), boolToStatus(amqpUp), boolToStatus(amqpExternalUp), boolToStatus(bentoHTTPUp); statusMu.Unlock()
+    statusMu.Lock(); ks, as, es, bs := boolToStatus(kafkaUp), boolToStatus(amqpUp), boolToStatus(amqpExternalUp), boolToStatus(httpInputUp); statusMu.Unlock()
     fmt.Fprintf(w, "event: outputKafkaStatus\ndata: %s\n\n", ks)
     fmt.Fprintf(w, "event: outputAmqpStatus\ndata: %s\n\n", as)
     fmt.Fprintf(w, "event: inputAmqpStatus\ndata: %s\n\n", es)
@@ -346,7 +346,7 @@ func postJSON(w http.ResponseWriter, url string, body any) {
     w.WriteHeader(resp.StatusCode)
 }
 
-// Simple readiness check for Bento HTTP input
+// Simple readiness check for Streams HTTP input
 func checkStreamsHTTP(url string) bool {
     client := &http.Client{Timeout: 1500 * time.Millisecond}
     req, _ := http.NewRequest(http.MethodOptions, url, nil)

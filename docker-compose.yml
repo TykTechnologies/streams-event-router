@@ -140,7 +140,7 @@ services:
     volumes:
       - ./tyk/oas:/oas:ro
       - ./tyk/import_oas.sh:/import_oas.sh:ro
-    entrypoint: ["sh","/import_oas.sh","/oas/bento-router.oas.yaml"]
+    entrypoint: ["sh","/import_oas.sh","/oas/streams-router.oas.yaml"]
     restart: "no"
 
 

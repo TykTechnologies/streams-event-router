@@ -7,7 +7,7 @@ This repository delivers an “Event Gateway” built with Tyk Streams that:
 - Applies sink‑specific transformations in outputs (Kafka → Protobuf; others → JSON)
 - Fan‑outs to multiple sinks with a single event
 
-It comes with a self‑contained docker‑compose stack and a demo UI. No standalone Bento process is used; all routing happens inside the Gateway via the x‑tyk‑streaming OAS extension.
+It comes with a self‑contained docker‑compose stack and a demo UI. All routing happens inside the Gateway via the x‑tyk‑streaming OAS extension.
 
 —
 
@@ -23,12 +23,22 @@ flowchart TD
   end
 
   subgraph Tyk Gateway
-    API1[/"Streams API<br/>(/streams-api)"/]
+    API1[/Streams API<br/>(/streams-api)/]
   end
 
-  subgraph "Streams (inside Gateway)"
-    S1[["bento_router<br/>AMQP background"]]
+
+  subgraph Streams (inside Gateway)
+    S1[[amqp_ingest<br/>AMQP background"]]
     S2[["http_ingest<br/>HTTP path /event"]]
+ 8feb26e (chore: remove all Bento references; rename OAS + streams; delete legacy Bento files; update README and Makefile)
+  subgraph Streams (inside Gateway)
+    S1[[amqp_ingest<br/>AMQP background]]
+    S2[[http_ingest<br/>HTTP path /event]]
+
+  subgraph Streams (inside Gateway)
+    S1[[amqp_ingest<br/>AMQP background]]
+    S2[[http_ingest<br/>HTTP path /event]]
+ 8feb26e (chore: remove all Bento references; rename OAS + streams; delete legacy Bento files; update README and Makefile)
   end
 
   subgraph Brokers
@@ -50,7 +60,7 @@ flowchart TD
 ```
 
 Design decisions
-- Two streams, one API: a background AMQP stream (`bento_router`) and an HTTP stream (`http_ingest`). Both share the same routing/transforms.
+- Two streams, one API: a background AMQP stream (`amqp_ingest`) and an HTTP stream (`http_ingest`). Both share the same routing/transforms.
 
 —
 
@@ -89,7 +99,7 @@ servers:
   - url: "http://tyk-gateway:8282/streams-api/"
 x-tyk-api-gateway:
   info:
-    name: Bento Router (Streams)
+    name: Event Router (Streams)
     orgId: default
     state:
       active: true
@@ -100,7 +110,7 @@ x-tyk-api-gateway:
       value: /streams-api/
 x-tyk-streaming:
   streams:
-    bento_router:
+    amqp_ingest:
       input:
         amqp_0_9:
           urls: [ "amqp://guest:guest@rabbitmq:5672/" ]
@@ -251,13 +261,13 @@ Stop:
 
 ## Repository layout
 
-- `tyk/oas/bento-router.oas.yaml` — Tyk Streams OAS (two streams)
+- `tyk/oas/streams-router.oas.yaml` — Tyk Streams OAS (two streams)
 - `tyk/import_oas.sh` — curl‑only importer: YAML→JSON, dedup + import + reload
 - `docker-compose.yml` — Gateway (ports 18282/19696), RabbitMQ, Kafka/ZooKeeper, demo UI
 - `schemas/` — Protobuf schemas (event + testing.Person)
 - `definitions.json` — RabbitMQ definitions (declares required queues)
 - `demo/` — UI and server (SSE + Protobuf decode)
-- `streams/` — Bento wrapper
+ 
 - `schemas/` — `.proto` files
 - `docker-compose.yml`, `Makefile`
 

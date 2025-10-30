@@ -2,7 +2,7 @@
 set -eu
 GW=${GW:-http://localhost:8282}
 SECRET=${TYK_SECRET:-foo}
-INFILE=${1:-/oas/bento-router.oas.yaml}
+INFILE=${1:-/oas/streams-router.oas.yaml}
 EXTRA=${EXTRA_OAS:-/oas/diag.oas.yaml}
 
 echo "Waiting for gateway at $GW ..."
@@ -20,7 +20,7 @@ if [ ! -x "$YQ" ]; then
 fi
 
 # Delete any prior APIs by name or listen path to avoid collisions
-API_NAME="Bento Router (Streams)"
+API_NAME="Event Router (Streams)"
 echo "Cleaning prior APIs named: $API_NAME or with listen_path /streams-api/ ..."
 ALL=$(curl -fsS -H "x-tyk-authorization: $SECRET" "$GW/tyk/apis" || echo '[]')
 IDS_BY_NAME=$(echo "$ALL" | "$YQ" -p=json -o=json '.[] | select(.name == strenv(API_NAME)) | .api_id' 2>/dev/null || true)
