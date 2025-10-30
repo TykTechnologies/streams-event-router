@@ -16,7 +16,7 @@ x-tyk-api-gateway:
     orgId: default
     state:
       active: true
-      internal: true
+      internal: false
   middleware:
     global:
       contextVariables:
