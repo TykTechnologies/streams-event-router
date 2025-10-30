@@ -88,6 +88,7 @@ services:
       AMQP_ADDR: amqp://rabbitmq:5672
       AMQP_SOURCE: low-priority-queue
       AMQP_TARGET: inbound-queue
+      TYK_STREAMS_URL: http://tyk-gateway:8282/streams-api/event/
     ports:
       - "8080:8080"
 
@@ -129,7 +130,8 @@ services:
   tyk-import:
     image: curlimages/curl:8.7.1
     depends_on:
-      - tyk-gateway
+      tyk-gateway:
+        condition: service_started
       rabbit-init:
         condition: service_completed_successfully
     environment:

@@ -323,49 +323,40 @@ func sendCE(w http.ResponseWriter, bentoURL, typ string, data map[string]any) {
 
 func postJSON(w http.ResponseWriter, url string, body any) {
     b, _ := json.Marshal(body)
-    candidates := []string{
-        url,
-        // Tyk Streams via API base + http_server path
-        "http://tyk-gateway:8282/streams-api/event/",
-        "http://localhost:8282/streams-api/event/",
-    }
-    var lastErr error
-    // Allow for pipeline latency (LOW path sleeps 5s), so use a generous timeout.
     client := &http.Client{Timeout: 12 * time.Second}
-    for _, u := range candidates {
-        req, _ := http.NewRequest(http.MethodPost, u, bytes.NewReader(b))
-        req.Header.Set("Content-Type", "application/json")
-        resp, err := client.Do(req)
-        if err != nil {
-            lastErr = err
-            continue
-        }
-        // read & close to reuse connections
-        _ = resp.Body.Close()
-        // Treat only <400 as success; otherwise try next candidate
-        if resp.StatusCode < 400 {
-            w.WriteHeader(resp.StatusCode)
-            return
-        }
-        lastErr = fmt.Errorf("upstream %s returned %d", u, resp.StatusCode)
+    req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+    req.Header.Set("Content-Type", "application/json")
+    resp, err := client.Do(req)
+    if err != nil {
+        // Log exact reason and bubble it up to the client
+        log.Printf("emit POST %s failed: %v", url, err)
+        w.WriteHeader(http.StatusBadGateway)
+        _, _ = w.Write([]byte(fmt.Sprintf("emit failed: %v", err)))
+        return
     }
-    w.WriteHeader(http.StatusBadGateway)
-    if lastErr != nil { _, _ = w.Write([]byte(lastErr.Error())) }
+    defer resp.Body.Close()
+    if resp.StatusCode >= 400 {
+        // Include upstream status and a short body snippet
+        buf := mustReadAllLimit(resp.Body, 8<<10)
+        log.Printf("emit POST %s upstream status=%d body=%q", url, resp.StatusCode, string(buf))
+        w.WriteHeader(http.StatusBadGateway)
+        _, _ = w.Write([]byte(fmt.Sprintf("upstream %s returned %d: %s", url, resp.StatusCode, string(buf))))
+        return
+    }
+    w.WriteHeader(resp.StatusCode)
 }
 
 // Simple readiness check for Bento HTTP input
 func checkStreamsHTTP(url string) bool {
-    candidates := []string{url, "http://tyk-gateway:8282/streams-api/event/", "http://localhost:8282/streams-api/event/"}
     client := &http.Client{Timeout: 1500 * time.Millisecond}
-    for _, u := range candidates {
-        req, _ := http.NewRequest(http.MethodOptions, u, nil)
-        resp, err := client.Do(req)
-        if err == nil && resp.StatusCode < 500 {
-            resp.Body.Close()
-            return true
-        }
+    req, _ := http.NewRequest(http.MethodOptions, url, nil)
+    resp, err := client.Do(req)
+    if err != nil {
+        log.Printf("HTTP input probe failed for %s: %v", url, err)
+        return false
     }
-    return false
+    _ = resp.Body.Close()
+    return resp.StatusCode < 500
 }
 
 var indexHTML = `<!DOCTYPE html>
