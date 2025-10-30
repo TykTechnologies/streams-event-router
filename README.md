@@ -23,12 +23,12 @@ flowchart TD
   end
 
   subgraph Tyk Gateway
-    API1[/Streams API<br/>(/streams-api)/]
+    API1[/"Streams API<br/>(/streams-api)"/]
   end
 
-  subgraph Streams (inside Gateway)
-    S1[[bento_router<br/>AMQP background]]
-    S2[[http_ingest<br/>HTTP path /event]]
+  subgraph "Streams (inside Gateway)"
+    S1[["bento_router<br/>AMQP background"]]
+    S2[["http_ingest<br/>HTTP path /event"]]
   end
 
   subgraph Brokers
@@ -59,14 +59,14 @@ Design decisions
 ```mermaid
 flowchart LR
   A[Incoming Event] --> B{CE shaped?}
-  B -- yes --> V[Validate (JSON Schema)<br/>Normalize fields]
+  B -- yes --> V["Validate (JSON Schema)<br/>Normalize fields"]
   B -- no --> P[Pass through]
   V --> R
   P --> R
   R{Type}
-  R -- ORDER_CREATED --> Kf[meta(route_kafka)=true]
-  R -- USER_REGISTERED --> Aq[meta(route_amqp)=amqp_local]
-  R -- AUDIT_LOG --> Ht[meta(route_http)=true]
+  R -- ORDER_CREATED --> Kf["meta(route_kafka)=true"]
+  R -- USER_REGISTERED --> Aq["meta(route_amqp)=amqp_local"]
+  R -- AUDIT_LOG --> Ht["meta(route_http)=true"]
   R -- BROADCAST_DEMO --> All[set all three]
   All --> O[Output switch<br/>continue:true]
   Kf --> O
