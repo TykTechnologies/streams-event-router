@@ -23,22 +23,13 @@ flowchart TD
   end
 
   subgraph Tyk Gateway
-    API1[/Streams API<br/>(/streams-api)/]
+    API1["/Streams API<br/>(/streams-api)/"]
   end
 
 
-  subgraph Streams (inside Gateway)
-    S1[[amqp_ingest<br/>AMQP background"]]
+  subgraph "Streams (inside Gateway)"
+    S1[["amqp_ingest<br/>AMQP background"]]
     S2[["http_ingest<br/>HTTP path /event"]]
- 8feb26e (chore: remove all Bento references; rename OAS + streams; delete legacy Bento files; update README and Makefile)
-  subgraph Streams (inside Gateway)
-    S1[[amqp_ingest<br/>AMQP background]]
-    S2[[http_ingest<br/>HTTP path /event]]
-
-  subgraph Streams (inside Gateway)
-    S1[[amqp_ingest<br/>AMQP background]]
-    S2[[http_ingest<br/>HTTP path /event]]
- 8feb26e (chore: remove all Bento references; rename OAS + streams; delete legacy Bento files; update README and Makefile)
   end
 
   subgraph Brokers
