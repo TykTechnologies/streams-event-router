@@ -214,6 +214,7 @@ output:
 ## Run it
 
 Prereqs: Docker. Then:
+- Add your Tyk Dashboard license to .env (see .env.example)
 - Start: `docker compose up -d --build`
 - UI: http://localhost:8080
 - Streams API (host): http://localhost:18282/streams-api
