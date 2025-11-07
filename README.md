@@ -175,7 +175,7 @@ output:
       - check: 'meta("route_kafka") == "true"'
         continue: true
         output:
-          kafka: { addresses: [ "labs-kafka:9092" ], topic: "high-priority-topic", max_in_flight: 64 }
+          kafka: { addresses: [ "kafka:9092" ], topic: "high-priority-topic", max_in_flight: 64 }
           processors:
             - mapping: |
                 root.id = this.id.string().catch(uuid_v4())
@@ -252,13 +252,12 @@ Stop:
 
 ## Repository layout
 
-- `tyk/oas/streams-router.oas.yaml` — Tyk Streams OAS (two streams)
-- `tyk/import_oas.sh` — curl‑only importer: YAML→JSON, dedup + import + reload
-- `docker-compose.yml` — Gateway (ports 18282/19696), RabbitMQ, Kafka/ZooKeeper, demo UI
+- `oas/streams-router.oas.yaml` — Tyk Streams OAS (two streams)
+- `scripts/bootstrap.sh` — curl‑only dashboard bootstrap and importer: YAML→JSON, org/user creation + oas import
+- `docker-compose.yml` — Gateway (ports 18282/19696), RabbitMQ, Kafka, demo UI, Tyk Dashboard
 - `schemas/` — Protobuf schemas (event + testing.Person)
-- `definitions.json` — RabbitMQ definitions (declares required queues)
 - `demo/` — UI and server (SSE + Protobuf decode)
- 
+
 - `schemas/` — `.proto` files
 - `docker-compose.yml`, `Makefile`
 

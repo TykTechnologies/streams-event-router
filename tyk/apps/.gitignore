@@ -1,6 +1,0 @@
-*
-!.gitignore
-
-# We let the gateway manage its internal apps directory inside the container.
-# Do not commit generated app specs here. Use tyk/oas/*.yaml for import.
-

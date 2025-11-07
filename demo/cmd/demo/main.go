@@ -1,362 +1,509 @@
 package main
 
 import (
-    "bytes"
-    "context"
-    "crypto/tls"
-    "encoding/json"
-    "fmt"
-    "log"
-    "net/http"
-    "os"
-    "os/signal"
-    "sync"
-    "syscall"
-    "time"
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
-    kafka "github.com/segmentio/kafka-go"
-    amqp "github.com/Azure/go-amqp"
-    eventpb "github.com/example/event-router-demo/internal/pb/event"
-    "google.golang.org/protobuf/encoding/protojson"
-    pbproto "google.golang.org/protobuf/proto"
+	amqp "github.com/Azure/go-amqp"
+	eventpb "github.com/example/event-router-demo/internal/pb/event"
+	kafka "github.com/segmentio/kafka-go"
+	"google.golang.org/protobuf/encoding/protojson"
+	pbproto "google.golang.org/protobuf/proto"
 )
 
 type SSEEvent struct {
-    EventType string
-    Data      string
+	EventType string
+	Data      string
 }
 
 var (
-    kafkaUp        bool
-    amqpUp         bool
-    amqpExternalUp bool
-    httpInputUp    bool
-    statusMu       sync.Mutex
+	kafkaUp        bool
+	amqpUp         bool
+	amqpExternalUp bool
+	httpInputUp    bool
+	statusMu       sync.Mutex
 
-    sseClients   []chan SSEEvent
-    sseClientsMu sync.Mutex
+	sseClients   []chan SSEEvent
+	sseClientsMu sync.Mutex
 )
 
 func env(key, def string) string {
-    if v := os.Getenv(key); v != "" {
-        return v
-    }
-    return def
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func main() {
-    kafkaBrokerAddress := env("KAFKA_BROKER", "127.0.0.1:9092")
-    kafkaTopic := env("KAFKA_TOPIC", "high-priority-topic")
-    kafkaGroupID := env("KAFKA_GROUP", "demo-group")
+	kafkaBrokerAddress := env("KAFKA_BROKER", "127.0.0.1:9092")
+	kafkaTopic := env("KAFKA_TOPIC", "high-priority-topic")
+	kafkaGroupID := env("KAFKA_GROUP", "demo-group")
 
-    amqpBrokerAddress := env("AMQP_ADDR", "amqp://localhost:5672")
-    amqpSourceAddress := env("AMQP_SOURCE", "low-priority-queue")
-    amqpTargetAddress := env("AMQP_TARGET", "inbound-queue")
-    // Tyk Streams HTTP input: listenPath (/streams-api/) + http_server.path (/event)
-    tykURL := env("TYK_STREAMS_URL", "http://tyk-gateway:8282/streams-api/event")
+	amqpBrokerAddress := env("AMQP_ADDR", "amqp://localhost:5672")
+	amqpSourceAddress := env("AMQP_SOURCE", "low-priority-queue")
+	amqpTargetAddress := env("AMQP_TARGET", "inbound-queue")
+	// Tyk Streams HTTP input: listenPath (/streams-api/) + http_server.path (/event)
+	tykURL := env("TYK_STREAMS_URL", "http://tyk-gateway:8282/streams-api/event")
 
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-    sigCh := make(chan os.Signal, 1)
-    signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-    go consumeKafka(ctx, kafkaBrokerAddress, kafkaTopic, kafkaGroupID)
-    go consumeAMQP(ctx, amqpBrokerAddress, amqpSourceAddress)
-    // Health monitor for brokers + HTTP input
-    go monitorGatewayHealth(ctx, kafkaBrokerAddress, amqpBrokerAddress, amqpTargetAddress, tykURL)
+	go consumeKafka(ctx, kafkaBrokerAddress, kafkaTopic, kafkaGroupID)
+	go consumeAMQP(ctx, amqpBrokerAddress, amqpSourceAddress)
+	// Health monitor for brokers + HTTP input
+	go monitorGatewayHealth(ctx, kafkaBrokerAddress, amqpBrokerAddress, amqpTargetAddress, tykURL)
 
-    http.HandleFunc("/", serveIndex)
-    http.HandleFunc("/sse", serveSSE)
-    // Emit endpoints -> send events to Streams HTTP input
-    http.HandleFunc("/emit/order-created", func(w http.ResponseWriter, r *http.Request) {
-        sendCE(w, tykURL, "ORDER_CREATED", map[string]any{"orderId": time.Now().UnixNano()})
-    })
-    http.HandleFunc("/emit/user-registered", func(w http.ResponseWriter, r *http.Request) {
-        sendCE(w, tykURL, "USER_REGISTERED", map[string]any{"userId": time.Now().UnixNano()})
-    })
-    http.HandleFunc("/emit/audit", func(w http.ResponseWriter, r *http.Request) {
-        sendCE(w, tykURL, "AUDIT_LOG", map[string]any{"action": "demo-click", "ts": time.Now().Format(time.RFC3339)})
-    })
-    http.HandleFunc("/emit/broadcast", func(w http.ResponseWriter, r *http.Request) {
-        sendCE(w, tykURL, "BROADCAST_DEMO", map[string]any{"note": "fanout"})
-    })
-    // Manual AMQP inbound (send one message directly to inbound-queue)
-    http.HandleFunc("/emit/inbound-amqp", func(w http.ResponseWriter, r *http.Request) {
-        if err := sendOneInboundAMQP(amqpBrokerAddress, amqpTargetAddress); err != nil {
-            w.WriteHeader(http.StatusBadGateway)
-            _, _ = w.Write([]byte(err.Error()))
-            return
-        }
-        w.WriteHeader(http.StatusAccepted)
-    })
-    http.HandleFunc("/emit/person", func(w http.ResponseWriter, r *http.Request) {
-        body := map[string]any{"firstName": "caleb", "lastName": "quaye", "email": "caleb@myspace.com"}
-        postJSON(w, tykURL, body)
-    })
-    http.HandleFunc("/emit/raw", func(w http.ResponseWriter, r *http.Request) {
-        var m map[string]any
-        if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-            w.WriteHeader(http.StatusBadRequest); _, _ = w.Write([]byte("invalid json")); return
-        }
-        postJSON(w, tykURL, m)
-    })
-    http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
-        // Simple collector endpoint used by HTTP output
-        b := mustReadAllLimit(r.Body, 1<<20)
-        broadcastEvent(SSEEvent{EventType: "outputHttpMessage", Data: fmt.Sprintf("HTTP received: %s", string(b))})
-        w.WriteHeader(http.StatusAccepted)
-    })
+	http.HandleFunc("/", serveIndex)
+	http.HandleFunc("/sse", serveSSE)
+	// Emit endpoints -> send events to Streams HTTP input
+	http.HandleFunc("/emit/order-created", func(w http.ResponseWriter, r *http.Request) {
+		sendCE(w, tykURL, "ORDER_CREATED", map[string]any{"orderId": time.Now().UnixNano()})
+	})
+	http.HandleFunc("/emit/user-registered", func(w http.ResponseWriter, r *http.Request) {
+		sendCE(w, tykURL, "USER_REGISTERED", map[string]any{"userId": time.Now().UnixNano()})
+	})
+	http.HandleFunc("/emit/audit", func(w http.ResponseWriter, r *http.Request) {
+		sendCE(w, tykURL, "AUDIT_LOG", map[string]any{"action": "demo-click", "ts": time.Now().Format(time.RFC3339)})
+	})
+	http.HandleFunc("/emit/broadcast", func(w http.ResponseWriter, r *http.Request) {
+		sendCE(w, tykURL, "BROADCAST_DEMO", map[string]any{"note": "fanout"})
+	})
+	// Manual AMQP inbound (send one message directly to inbound-queue)
+	http.HandleFunc("/emit/inbound-amqp", func(w http.ResponseWriter, r *http.Request) {
+		if err := sendOneInboundAMQP(amqpBrokerAddress, amqpTargetAddress); err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(err.Error()))
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	http.HandleFunc("/emit/person", func(w http.ResponseWriter, r *http.Request) {
+		data := map[string]any{"firstName": "caleb", "lastName": "quaye", "email": "caleb@myspace.com"}
+		body := map[string]any{"data": data}
+		postJSON(w, tykURL, body)
+	})
+	http.HandleFunc("/emit/raw", func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("invalid json"))
+			return
+		}
+		postJSON(w, tykURL, m)
+	})
+	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		// Simple collector endpoint used by HTTP output
+		b := mustReadAllLimit(r.Body, 1<<20)
+		broadcastEvent(SSEEvent{EventType: "outputHttpMessage", Data: fmt.Sprintf("HTTP received: %s", string(b))})
+		w.WriteHeader(http.StatusAccepted)
+	})
 
-    srv := &http.Server{Addr: ":8080"}
-    go func() {
-        log.Println("Demo UI: http://localhost:8080")
-        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            log.Printf("HTTP server error: %v", err)
-            cancel()
-        }
-    }()
+	srv := &http.Server{Addr: ":8080"}
+	go func() {
+		log.Println("Demo UI: http://localhost:8080")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP server error: %v", err)
+			cancel()
+		}
+	}()
 
-    <-sigCh
-    log.Println("Shutting down...")
-    cancel()
-    ctx2, c2 := context.WithTimeout(context.Background(), 5*time.Second)
-    defer c2()
-    _ = srv.Shutdown(ctx2)
+	<-sigCh
+	log.Println("Shutting down...")
+	cancel()
+	ctx2, c2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer c2()
+	_ = srv.Shutdown(ctx2)
 }
 
 // ---- Kafka ----
 func consumeKafka(ctx context.Context, broker, topic, group string) {
-    for {
-        if ctx.Err() != nil { return }
-        r := kafka.NewReader(kafka.ReaderConfig{
-            Brokers:  []string{broker},
-            GroupID:  group,
-            Topic:    topic,
-            MinBytes: 1,
-            MaxBytes: 10e6,
-        })
-        if err := testKafkaConnection(ctx, broker); err != nil {
-            setKafkaStatus(false)
-            _ = r.Close()
-            if !sleepOrExit(ctx, 2*time.Second) { return }
-            continue
-        }
-        setKafkaStatus(true)
-        for {
-            m, err := r.ReadMessage(ctx)
-            if err != nil { _ = r.Close(); setKafkaStatus(false); break }
-            // Try to decode event.Event protobuf
-            var ev eventpb.Event
-            if err := pbproto.Unmarshal(m.Value, &ev); err == nil {
-                j, _ := (protojson.MarshalOptions{EmitUnpopulated: true}).Marshal(&ev)
-                broadcastEvent(SSEEvent{EventType: "outputKafkaMessage", Data: fmt.Sprintf("Kafka event (decoded): %s", string(j))})
-            } else {
-                broadcastEvent(SSEEvent{EventType: "outputKafkaMessage", Data: fmt.Sprintf("Kafka bytes (%dB)", len(m.Value))})
-            }
-        }
-        if !sleepOrExit(ctx, 2*time.Second) { return }
-    }
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		r := kafka.NewReader(kafka.ReaderConfig{
+			Brokers:  []string{broker},
+			GroupID:  group,
+			Topic:    topic,
+			MinBytes: 1,
+			MaxBytes: 10e6,
+		})
+		if err := testKafkaConnection(ctx, broker); err != nil {
+			setKafkaStatus(false)
+			_ = r.Close()
+			if !sleepOrExit(ctx, 2*time.Second) {
+				return
+			}
+			continue
+		}
+		setKafkaStatus(true)
+		for {
+			m, err := r.ReadMessage(ctx)
+			if err != nil {
+				_ = r.Close()
+				setKafkaStatus(false)
+				break
+			}
+			// Try to decode event.Event protobuf
+			var ev eventpb.Event
+			if err := pbproto.Unmarshal(m.Value, &ev); err == nil {
+				j, _ := (protojson.MarshalOptions{EmitUnpopulated: true}).Marshal(&ev)
+				broadcastEvent(SSEEvent{EventType: "outputKafkaMessage", Data: fmt.Sprintf("Kafka event (decoded): %s", string(j))})
+			} else {
+				broadcastEvent(SSEEvent{EventType: "outputKafkaMessage", Data: fmt.Sprintf("Kafka bytes (%dB)", len(m.Value))})
+			}
+		}
+		if !sleepOrExit(ctx, 2*time.Second) {
+			return
+		}
+	}
 }
 
 func testKafkaConnection(ctx context.Context, broker string) error {
-    d := &kafka.Dialer{Timeout: time.Second, DualStack: true}
-    c, err := d.DialContext(ctx, "tcp", broker)
-    if err != nil { return err }
-    defer c.Close()
-    _, err = c.Brokers()
-    return err
+	d := &kafka.Dialer{Timeout: time.Second, DualStack: true}
+	c, err := d.DialContext(ctx, "tcp", broker)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_, err = c.Brokers()
+	return err
 }
 
 // ---- AMQP 1.0 ----
 func consumeAMQP(ctx context.Context, addr, source string) {
-    for {
-        if ctx.Err() != nil { return }
-        dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-        conn, err := amqp.Dial(dialCtx, addr, &amqp.ConnOptions{
-            SASLType: amqp.SASLTypePlain("guest","guest"),
-            TLSConfig: &tls.Config{InsecureSkipVerify: true},
-        })
-        cancel()
-        if err != nil { setAMQPStatus(false); if !sleepOrExit(ctx, 2*time.Second) { return }; continue }
-        session, err := conn.NewSession(ctx, nil)
-        if err != nil { _ = conn.Close(); setAMQPStatus(false); if !sleepOrExit(ctx, 2*time.Second) { return }; continue }
-        recv, err := session.NewReceiver(ctx, source, nil)
-        if err != nil { _ = session.Close(ctx); _ = conn.Close(); setAMQPStatus(false); if !sleepOrExit(ctx, 2*time.Second) { return }; continue }
-        setAMQPStatus(true)
-        for {
-            msg, err := recv.Receive(ctx, nil)
-            if err != nil { _ = recv.Close(ctx); _ = session.Close(ctx); _ = conn.Close(); setAMQPStatus(false); break }
-            _ = recv.AcceptMessage(ctx, msg)
-            broadcastEvent(SSEEvent{EventType: "outputAmqpMessage", Data: fmt.Sprintf("AMQP says: %s", string(msg.GetData()))})
-        }
-    }
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		conn, err := amqp.Dial(dialCtx, addr, &amqp.ConnOptions{
+			SASLType:  amqp.SASLTypePlain("guest", "guest"),
+			TLSConfig: &tls.Config{InsecureSkipVerify: true},
+		})
+		cancel()
+		if err != nil {
+			setAMQPStatus(false)
+			if !sleepOrExit(ctx, 2*time.Second) {
+				return
+			}
+			continue
+		}
+		session, err := conn.NewSession(ctx, nil)
+		if err != nil {
+			_ = conn.Close()
+			setAMQPStatus(false)
+			if !sleepOrExit(ctx, 2*time.Second) {
+				return
+			}
+			continue
+		}
+		recv, err := session.NewReceiver(ctx, source, nil)
+		if err != nil {
+			_ = session.Close(ctx)
+			_ = conn.Close()
+			setAMQPStatus(false)
+			if !sleepOrExit(ctx, 2*time.Second) {
+				return
+			}
+			continue
+		}
+		setAMQPStatus(true)
+		for {
+			msg, err := recv.Receive(ctx, nil)
+			if err != nil {
+				_ = recv.Close(ctx)
+				_ = session.Close(ctx)
+				_ = conn.Close()
+				setAMQPStatus(false)
+				break
+			}
+			_ = recv.AcceptMessage(ctx, msg)
+			broadcastEvent(SSEEvent{EventType: "outputAmqpMessage", Data: fmt.Sprintf("AMQP says: %s", string(msg.GetData()))})
+		}
+	}
 }
 
 // sendOneInboundAMQP sends a single CloudEvents-like JSON to the inbound AMQP target
 func sendOneInboundAMQP(addr, target string) error {
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-    conn, err := amqp.Dial(ctx, addr, &amqp.ConnOptions{SASLType: amqp.SASLTypePlain("guest","guest"), TLSConfig: &tls.Config{InsecureSkipVerify: true}})
-    if err != nil { return err }
-    defer conn.Close()
-    sess, err := conn.NewSession(ctx, nil); if err != nil { return err }
-    defer sess.Close(ctx)
-    snd, err := sess.NewSender(ctx, target, nil); if err != nil { return err }
-    defer snd.Close(ctx)
-    body := map[string]any{
-        "id": time.Now().UnixNano(),
-        "source": "demo/manual-amqp",
-        "type": "USER_REGISTERED",
-        "specversion": "1.0",
-        "data": map[string]any{"note": "manual inbound"},
-    }
-    payload, _ := json.Marshal(body)
-    return snd.Send(ctx, amqp.NewMessage(payload), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := amqp.Dial(ctx, addr, &amqp.ConnOptions{SASLType: amqp.SASLTypePlain("guest", "guest"), TLSConfig: &tls.Config{InsecureSkipVerify: true}})
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	sess, err := conn.NewSession(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer sess.Close(ctx)
+	snd, err := sess.NewSender(ctx, target, nil)
+	if err != nil {
+		return err
+	}
+	defer snd.Close(ctx)
+	body := map[string]any{
+		"id":          time.Now().UnixNano(),
+		"source":      "demo/manual-amqp",
+		"type":        "USER_REGISTERED",
+		"specversion": "1.0",
+		"data":        map[string]any{"note": "manual inbound"},
+	}
+	payload, _ := json.Marshal(body)
+	return snd.Send(ctx, amqp.NewMessage(payload), nil)
 }
 
 // ---- Health ----
 func monitorGatewayHealth(ctx context.Context, broker, amqpAddr, amqpTarget, streamsURL string) {
-    ticker := time.NewTicker(5*time.Second); defer ticker.Stop()
-    for {
-        select {
-        case <-ctx.Done(): return
-        case <-ticker.C:
-            setKafkaStatus(checkKafka(broker))
-            setAMQPStatus(checkAMQP(amqpAddr))
-            setExternalAMQPStatus(checkExternalAMQP(amqpAddr, amqpTarget))
-            setHTTPInputStatus(checkStreamsHTTP(streamsURL))
-        }
-    }
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			setKafkaStatus(checkKafka(broker))
+			setAMQPStatus(checkAMQP(amqpAddr))
+			setExternalAMQPStatus(checkExternalAMQP(amqpAddr, amqpTarget))
+			setHTTPInputStatus(checkStreamsHTTP(streamsURL))
+		}
+	}
 }
 
 func checkKafka(broker string) bool { return testKafkaConnection(context.Background(), broker) == nil }
 func checkAMQP(addr string) bool {
-    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second); defer cancel()
-    c, err := amqp.Dial(ctx, addr, &amqp.ConnOptions{SASLType: amqp.SASLTypePlain("guest","guest"), TLSConfig: &tls.Config{InsecureSkipVerify: true}})
-    if err != nil { return false }
-    defer c.Close(); s, err := c.NewSession(ctx, nil); if err != nil { return false }
-    _ = s.Close(ctx); return true
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c, err := amqp.Dial(ctx, addr, &amqp.ConnOptions{SASLType: amqp.SASLTypePlain("guest", "guest"), TLSConfig: &tls.Config{InsecureSkipVerify: true}})
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+	s, err := c.NewSession(ctx, nil)
+	if err != nil {
+		return false
+	}
+	_ = s.Close(ctx)
+	return true
 }
 func checkExternalAMQP(addr, target string) bool {
-    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second); defer cancel()
-    c, err := amqp.Dial(ctx, addr, &amqp.ConnOptions{SASLType: amqp.SASLTypePlain("guest","guest"), TLSConfig: &tls.Config{InsecureSkipVerify: true}})
-    if err != nil { return false }
-    defer c.Close(); s, err := c.NewSession(ctx, nil); if err != nil { return false }
-    defer s.Close(ctx); snd, err := s.NewSender(ctx, target, nil); if err != nil { return false }
-    _ = snd.Close(ctx); return true
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c, err := amqp.Dial(ctx, addr, &amqp.ConnOptions{SASLType: amqp.SASLTypePlain("guest", "guest"), TLSConfig: &tls.Config{InsecureSkipVerify: true}})
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+	s, err := c.NewSession(ctx, nil)
+	if err != nil {
+		return false
+	}
+	defer s.Close(ctx)
+	snd, err := s.NewSender(ctx, target, nil)
+	if err != nil {
+		return false
+	}
+	_ = snd.Close(ctx)
+	return true
 }
 
-func setKafkaStatus(up bool) { statusMu.Lock(); ch := (kafkaUp != up); kafkaUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"outputKafkaStatus", boolToStatus(up)}) } }
-func setAMQPStatus(up bool) { statusMu.Lock(); ch := (amqpUp != up); amqpUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"outputAmqpStatus", boolToStatus(up)}) } }
-func setExternalAMQPStatus(up bool) { statusMu.Lock(); ch := (amqpExternalUp != up); amqpExternalUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"inputAmqpStatus", boolToStatus(up)}) } }
-func setHTTPInputStatus(up bool) { statusMu.Lock(); ch := (httpInputUp != up); httpInputUp = up; statusMu.Unlock(); if ch { broadcastEvent(SSEEvent{"inputHttpStatus", boolToStatus(up)}) } }
+func setKafkaStatus(up bool) {
+	statusMu.Lock()
+	ch := (kafkaUp != up)
+	kafkaUp = up
+	statusMu.Unlock()
+	if ch {
+		broadcastEvent(SSEEvent{"outputKafkaStatus", boolToStatus(up)})
+	}
+}
+func setAMQPStatus(up bool) {
+	statusMu.Lock()
+	ch := (amqpUp != up)
+	amqpUp = up
+	statusMu.Unlock()
+	if ch {
+		broadcastEvent(SSEEvent{"outputAmqpStatus", boolToStatus(up)})
+	}
+}
+func setExternalAMQPStatus(up bool) {
+	statusMu.Lock()
+	ch := (amqpExternalUp != up)
+	amqpExternalUp = up
+	statusMu.Unlock()
+	if ch {
+		broadcastEvent(SSEEvent{"inputAmqpStatus", boolToStatus(up)})
+	}
+}
+func setHTTPInputStatus(up bool) {
+	statusMu.Lock()
+	ch := (httpInputUp != up)
+	httpInputUp = up
+	statusMu.Unlock()
+	if ch {
+		broadcastEvent(SSEEvent{"inputHttpStatus", boolToStatus(up)})
+	}
+}
 
-func boolToStatus(up bool) string { if up { return "UP" }; return "DOWN" }
+func boolToStatus(up bool) string {
+	if up {
+		return "UP"
+	}
+	return "DOWN"
+}
 
 // ---- SSE + Helpers ----
 func broadcastEvent(ev SSEEvent) {
-    sseClientsMu.Lock(); defer sseClientsMu.Unlock()
-    for _, ch := range sseClients { select { case ch <- ev: default: } }
+	sseClientsMu.Lock()
+	defer sseClientsMu.Unlock()
+	for _, ch := range sseClients {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
 }
 
 func serveSSE(w http.ResponseWriter, r *http.Request) {
-    w.Header().Set("Content-Type", "text/event-stream")
-    w.Header().Set("Cache-Control", "no-cache")
-    w.Header().Set("Connection", "keep-alive")
-    clientCh := make(chan SSEEvent, 10)
-    sseClientsMu.Lock(); sseClients = append(sseClients, clientCh); sseClientsMu.Unlock()
-    defer func() {
-        sseClientsMu.Lock(); for i, ch := range sseClients { if ch == clientCh { sseClients = append(sseClients[:i], sseClients[i+1:]...); break } }; sseClientsMu.Unlock(); close(clientCh)
-    }()
-    statusMu.Lock(); ks, as, es, bs := boolToStatus(kafkaUp), boolToStatus(amqpUp), boolToStatus(amqpExternalUp), boolToStatus(httpInputUp); statusMu.Unlock()
-    fmt.Fprintf(w, "event: outputKafkaStatus\ndata: %s\n\n", ks)
-    fmt.Fprintf(w, "event: outputAmqpStatus\ndata: %s\n\n", as)
-    fmt.Fprintf(w, "event: inputAmqpStatus\ndata: %s\n\n", es)
-    fmt.Fprintf(w, "event: inputHttpStatus\ndata: %s\n\n", bs)
-    if f, ok := w.(http.Flusher); ok { f.Flush() }
-    for {
-        select {
-        case ev := <-clientCh:
-            fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.EventType, ev.Data)
-            if f, ok := w.(http.Flusher); ok { f.Flush() }
-        case <-r.Context().Done():
-            return
-        }
-    }
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	clientCh := make(chan SSEEvent, 10)
+	sseClientsMu.Lock()
+	sseClients = append(sseClients, clientCh)
+	sseClientsMu.Unlock()
+	defer func() {
+		sseClientsMu.Lock()
+		for i, ch := range sseClients {
+			if ch == clientCh {
+				sseClients = append(sseClients[:i], sseClients[i+1:]...)
+				break
+			}
+		}
+		sseClientsMu.Unlock()
+		close(clientCh)
+	}()
+	statusMu.Lock()
+	ks, as, es, bs := boolToStatus(kafkaUp), boolToStatus(amqpUp), boolToStatus(amqpExternalUp), boolToStatus(httpInputUp)
+	statusMu.Unlock()
+	fmt.Fprintf(w, "event: outputKafkaStatus\ndata: %s\n\n", ks)
+	fmt.Fprintf(w, "event: outputAmqpStatus\ndata: %s\n\n", as)
+	fmt.Fprintf(w, "event: inputAmqpStatus\ndata: %s\n\n", es)
+	fmt.Fprintf(w, "event: inputHttpStatus\ndata: %s\n\n", bs)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	for {
+		select {
+		case ev := <-clientCh:
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.EventType, ev.Data)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func serveIndex(w http.ResponseWriter, _ *http.Request) {
-    w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    fmt.Fprint(w, indexHTML)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, indexHTML)
 }
 
-func sleepOrExit(ctx context.Context, d time.Duration) bool { select { case <-time.After(d): return true; case <-ctx.Done(): return false } }
+func sleepOrExit(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
 
-func mustReadAllLimit(rc interface{ Read([]byte)(int,error); Close() error }, limit int64) []byte {
-    defer rc.Close()
-    var buf bytes.Buffer
-    tmp := make([]byte, 4096)
-    var total int64
-    for {
-        n, err := rc.Read(tmp)
-        if n > 0 {
-            total += int64(n)
-            if total > limit { break }
-            _, _ = buf.Write(tmp[:n])
-        }
-        if err != nil { break }
-    }
-    return buf.Bytes()
+func mustReadAllLimit(rc interface {
+	Read([]byte) (int, error)
+	Close() error
+}, limit int64) []byte {
+	defer rc.Close()
+	var buf bytes.Buffer
+	tmp := make([]byte, 4096)
+	var total int64
+	for {
+		n, err := rc.Read(tmp)
+		if n > 0 {
+			total += int64(n)
+			if total > limit {
+				break
+			}
+			_, _ = buf.Write(tmp[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	return buf.Bytes()
 }
 
 func sendCE(w http.ResponseWriter, bentoURL, typ string, data map[string]any) {
-    body := map[string]any{
-        "id": time.Now().UnixNano(),
-        "source": "demo/ui",
-        "type": typ,
-        "specversion": "1.0",
-        "data": data,
-    }
-    postJSON(w, bentoURL, body)
+	body := map[string]any{
+		"id":          time.Now().UnixNano(),
+		"source":      "demo/ui",
+		"type":        typ,
+		"specversion": "1.0",
+		"data":        data,
+	}
+	postJSON(w, bentoURL, body)
 }
 
 func postJSON(w http.ResponseWriter, url string, body any) {
-    b, _ := json.Marshal(body)
-    client := &http.Client{Timeout: 12 * time.Second}
-    req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
-    req.Header.Set("Content-Type", "application/json")
-    resp, err := client.Do(req)
-    if err != nil {
-        // Log exact reason and bubble it up to the client
-        log.Printf("emit POST %s failed: %v", url, err)
-        w.WriteHeader(http.StatusBadGateway)
-        _, _ = w.Write([]byte(fmt.Sprintf("emit failed: %v", err)))
-        return
-    }
-    defer resp.Body.Close()
-    if resp.StatusCode >= 400 {
-        // Include upstream status and a short body snippet
-        buf := mustReadAllLimit(resp.Body, 8<<10)
-        log.Printf("emit POST %s upstream status=%d body=%q", url, resp.StatusCode, string(buf))
-        w.WriteHeader(http.StatusBadGateway)
-        _, _ = w.Write([]byte(fmt.Sprintf("upstream %s returned %d: %s", url, resp.StatusCode, string(buf))))
-        return
-    }
-    w.WriteHeader(resp.StatusCode)
+	b, _ := json.Marshal(body)
+	client := &http.Client{Timeout: 12 * time.Second}
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		// Log exact reason and bubble it up to the client
+		log.Printf("emit POST %s failed: %v", url, err)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(fmt.Sprintf("emit failed: %v", err)))
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		// Include upstream status and a short body snippet
+		buf := mustReadAllLimit(resp.Body, 8<<10)
+		log.Printf("emit POST %s upstream status=%d body=%q", url, resp.StatusCode, string(buf))
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(fmt.Sprintf("upstream %s returned %d: %s", url, resp.StatusCode, string(buf))))
+		return
+	}
+	w.WriteHeader(resp.StatusCode)
 }
 
 // Simple readiness check for Streams HTTP input
 func checkStreamsHTTP(url string) bool {
-    client := &http.Client{Timeout: 1500 * time.Millisecond}
-    req, _ := http.NewRequest(http.MethodOptions, url, nil)
-    resp, err := client.Do(req)
-    if err != nil {
-        log.Printf("HTTP input probe failed for %s: %v", url, err)
-        return false
-    }
-    _ = resp.Body.Close()
-    return resp.StatusCode < 500
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	req, _ := http.NewRequest(http.MethodOptions, url, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("HTTP input probe failed for %s: %v", url, err)
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode < 500
 }
 
 var indexHTML = `<!DOCTYPE html>

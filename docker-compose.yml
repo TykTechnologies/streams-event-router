@@ -1,5 +1,5 @@
 services:
-  labs-kafka:
+  kafka:
     image: confluentinc/cp-kafka:7.5.0
     restart: always
     ports:
@@ -9,26 +9,30 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: CLIENT://:9092,EXTERNAL://:9093,CONTROLLER://:9094
-      KAFKA_ADVERTISED_LISTENERS: CLIENT://labs-kafka:9092,EXTERNAL://localhost:9093
+      KAFKA_ADVERTISED_LISTENERS: CLIENT://kafka:9092,EXTERNAL://localhost:9093
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CLIENT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@labs-kafka:9094
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: CLIENT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    networks:
+      - tyk
 
   kafka-init:
     image: confluentinc/cp-kafka:7.5.0
     depends_on:
-      - labs-kafka
+      - kafka
     entrypoint: ["bash","-c"]
     command: |
-      'for i in {1..60}; do kafka-topics --bootstrap-server labs-kafka:9092 --list >/dev/null 2>&1 && break || sleep 1; done; \
-       kafka-topics --bootstrap-server labs-kafka:9092 --create --if-not-exists --topic high-priority-topic --partitions 3 --replication-factor 1; \
-       kafka-topics --bootstrap-server labs-kafka:9092 --create --if-not-exists --topic FOO --partitions 1 --replication-factor 1; \
+      'for i in {1..60}; do kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break || sleep 1; done; \
+       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic high-priority-topic --partitions 3 --replication-factor 1; \
+       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic FOO --partitions 1 --replication-factor 1; \
        echo "Kafka topics ready."; sleep 2'
+    networks:
+      - tyk
 
   rabbitmq:
     image: rabbitmq:4-management
@@ -39,17 +43,14 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
-      RABBITMQ_LOAD_DEFINITIONS: "true"
-      RABBITMQ_DEFINITIONS_FILE: "/etc/rabbitmq/definitions.json"
-    volumes:
-      - ./definitions.json:/etc/rabbitmq/definitions.json:ro
     command: ["bash","-lc","rabbitmq-plugins enable --offline rabbitmq_amqp1_0 && exec docker-entrypoint.sh rabbitmq-server"]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 3s
       retries: 30
-
+    networks:
+      - tyk
 
   rabbit-init:
     image: curlimages/curl:8.7.1
@@ -67,17 +68,18 @@ services:
         curl -sf -u guest:guest -H 'content-type: application/json' -X PUT           http://rabbitmq:15672/api/queues/%2F/$q           -d '{"durable":true,"auto_delete":false,"arguments":{}}' || true
       done
       echo 'RabbitMQ queues ready.'
-
+    networks:
+      - tyk
 
   demo:
     build:
       context: .
       dockerfile: demo/Dockerfile
     depends_on:
-      - labs-kafka
+      - kafka
       - rabbitmq
     environment:
-      KAFKA_BROKER: labs-kafka:9092
+      KAFKA_BROKER: kafka:9092
       KAFKA_TOPIC: high-priority-topic
       KAFKA_GROUP: demo-group
       AMQP_ADDR: amqp://rabbitmq:5672
@@ -86,59 +88,98 @@ services:
       TYK_STREAMS_URL: http://tyk-gateway:8282/streams-api/event
     ports:
       - "8080:8080"
+    networks:
+      - tyk
 
-  tyk-gateway:
-    image: tykio/tyk-gateway-ee:v5.10.0
-    depends_on:
-      - redis
-      - labs-kafka
-      - rabbitmq
+  tyk-dashboard:
+    image: tykio/tyk-dashboard:v5.9.2
+    container_name: tyk-dashboard
     environment:
-      TYK_GW_LISTENPORT: 8282
-      TYK_GW_USE_DB: "false"
-      TYK_GW_STORAGE_TYPE: redis
-      TYK_GW_STORAGE_HOST: redis
-      TYK_GW_STORAGE_PORT: "6379"
-      TYK_GW_STORAGE_PASSWORD: ""
-      TYK_GW_CONTROL_API_PORT: 9696
-      TYK_GW_SECRET: foo
-      TYK_GW_APP_PATH: /opt/tyk-gateway/apps
-      TYK_GW_APPS_PATH: /opt/tyk-gateway/apps
-      TYK_GW_POLICIES_POLICY_SOURCE: file
-      TYK_GW_POLICIES_POLICY_DIR: /opt/tyk-gateway/policies
-      TYK_GW_ENABLEOAS: "true"
-      TYK_GW_ENABLE_API: "true"
-      TYK_GW_STREAMING_ENABLED: "true"
-      TYK_GW_STREAMING_ALLOWUNSAFE: http_server
-      TYK_LOGLEVEL: debug
+      - TYK_DB_LICENSEKEY=${DASH_LICENSE:?License key missing from Docker environment file "".env" file.  Review The Getting Started steps in README.md.}
+      - TYK_DB_STORAGE_MAIN_TYPE=postgres
+      - TYK_DB_STORAGE_MAIN_CONNECTIONSTRING=user=postgres password=topsecretpassword host=tyk-postgres port=5432 database=tyk_analytics
+    depends_on:
+      tyk-postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./confs/tyk_analytics.env
+    networks:
+      - tyk
     volumes:
-      - ./tyk/policies:/opt/tyk-gateway/policies:ro
+      - ./certs/tyk-dashboard-certificate.pem/:/opt/tyk-dashboard/certs/tyk-dashboard-certificate.pem
+      - ./certs/tyk-dashboard-private-key.pem/:/opt/tyk-dashboard/certs/tyk-dashboard-private-key.pem
+  
+  tyk-gateway:
+    image: tykio/tyk-gateway-ee:v5.9.2
+    depends_on:
+      - tyk-redis
+      - kafka
+      - rabbitmq
+    env_file:
+      - ./confs/tyk.env
+    volumes:
+      - ./certs/tyk-gateway-certificate.pem/:/opt/tyk-gateway/certs/tyk-gateway-certificate.pem
+      - ./certs/tyk-gateway-private-key.pem/:/opt/tyk-gateway/certs/tyk-gateway-private-key.pem
       - ./schemas:/work/schemas:ro
     ports:
       - "18282:8282"
       - "19696:9696"
+    networks:
+      - tyk
 
-  redis:
+  tyk-redis:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    networks:
+      - tyk
 
-  tyk-import:
+  tyk-postgres:
+    image: postgres:latest
+    container_name: tyk-postgres
+    environment:
+      - POSTGRES_DB=tyk_analytics
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=topsecretpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tyk
+
+  tyk-bootstrap:
     image: curlimages/curl:8.7.1
     depends_on:
+      tyk-dashboard:
+        condition: service_started
       tyk-gateway:
         condition: service_started
       rabbit-init:
         condition: service_completed_successfully
     environment:
-      TYK_SECRET: foo
-      GW: http://tyk-gateway:8282
+      DASH: http://tyk-dashboard:3000
+      ADMIN_SECRET: 12345
     volumes:
-      - ./tyk/oas:/oas:ro
-      - ./tyk/import_oas.sh:/import_oas.sh:ro
-    entrypoint: ["sh","/import_oas.sh","/oas/streams-router.oas.yaml"]
+      - ./oas:/oas:ro
+      - ./scripts/bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["sh","/bootstrap.sh","/oas/streams-router.oas.yaml"]
     restart: "no"
-
+    networks:
+      - tyk
 
 volumes:
   kafka-data:
   rabbitmq_data:
+  postgres-data:
+
+networks:
+  tyk:
