@@ -8,6 +8,7 @@
 # env + logs
 .env.benthos
 *.log
+**/.env
 
 # build/output
 bin/

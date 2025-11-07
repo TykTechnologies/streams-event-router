@@ -45,7 +45,7 @@ x-tyk-streaming:
                       schema: "{\"$schema\": \"http://json-schema.org/draft-07/schema#\", \"properties\": {\"data\": {\"type\": [\"object\", \"array\", \"string\", \"number\", \"boolean\", \"null\"]}, \"id\": {\"type\": \"string\"}, \"source\": {\"type\": \"string\"}, \"type\": {\"type\": \"string\"}}, \"required\": [\"id\", \"source\", \"type\"], \"type\": \"object\"}"
                   - mapping: "root.id = this.id.string()\nroot.source = this.source.string()\nroot.type = this.type.string().uppercase()\nroot.data = this.data\nroot.timestamp = now().ts_format(\"2006-01-02T15:04:05Z07:00\")\nmeta is_ce = \"true\""
               - processors:
-                  - mapping: meta is_ce = "false"
+                  - mapping: "root.id = this.id\nroot.data = this.data\nmeta is_ce = \"false\""
           - switch:
               - check: this.type.string().catch("").uppercase() == "BROADCAST_DEMO"
                 processors:
@@ -72,7 +72,7 @@ x-tyk-streaming:
               output:
                 kafka:
                   addresses:
-                    - "labs-kafka:9092"
+                    - "kafka:9092"
                   max_in_flight: 64
                   topic: "high-priority-topic"
                 processors:
@@ -118,7 +118,7 @@ x-tyk-streaming:
                       schema: "{\"$schema\": \"http://json-schema.org/draft-07/schema#\", \"properties\": {\"data\": {\"type\": [\"object\", \"array\", \"string\", \"number\", \"boolean\", \"null\"]}, \"id\": {\"type\": \"string\"}, \"source\": {\"type\": \"string\"}, \"type\": {\"type\": \"string\"}}, \"required\": [\"id\", \"source\", \"type\"], \"type\": \"object\"}"
                   - mapping: "root.id = this.id.string()\nroot.source = this.source.string()\nroot.type = this.type.string().uppercase()\nroot.data = this.data\nroot.timestamp = now().ts_format(\"2006-01-02T15:04:05Z07:00\")\nmeta is_ce = \"true\""
               - processors:
-                  - mapping: meta is_ce = "false"
+                  - mapping: "root.id = this.id\nroot.data = this.data\nmeta is_ce = \"false\""
           - switch:
               - check: this.type.string().catch("").uppercase() == "BROADCAST_DEMO"
                 processors:
@@ -145,7 +145,7 @@ x-tyk-streaming:
               output:
                 kafka:
                   addresses:
-                    - "labs-kafka:9092"
+                    - "kafka:9092"
                   max_in_flight: 64
                   topic: "high-priority-topic"
                 processors:
